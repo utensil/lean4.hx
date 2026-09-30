@@ -96,6 +96,9 @@ expect "LEAN4_HX_CALLBACK result=reply"
 send "j"
 sleep 2
 expect "LEAN4_HX_GOAL_AVAILABLE"
+send "jjlllllll"
+sleep 2
+expect "LEAN4_HX_NAVIGATION cross-file"
 send "i"
 send "X"
 send "\\033"
@@ -135,6 +138,9 @@ for marker in \
     'LEAN4_HX_CLOSE' \
     'LEAN4_HX_REQUEST line=0 character=0 uri=file://' \
     'LEAN4_HX_CALLBACK result=reply' \
+    'LEAN4_HX_RPC action=connect' \
+    'LEAN4_HX_EDIT_APPLIED' \
+    'LEAN4_HX_NAVIGATION unavailable' \
     'LEAN4_HX_GOAL_AVAILABLE' \
     'LEAN4_HX_REMOVE active=false'; do
     grep -F "$marker" "$pty_log" >/dev/null || {

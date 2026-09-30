@@ -8,8 +8,8 @@
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-insert! native-record-open!
            native-record-close! native-record-request! native-record-callback!
-           native-begin-request! native-cancel-request! native-label native-summary
-           native-file-uri))
+           native-record-navigation! native-begin-request! native-cancel-request!
+           native-record-rpc! native-label native-summary native-file-uri))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -39,8 +39,7 @@
          250
          (lambda ()
            (set! lean4-hx-selection-pending? #f)
-           (if (and (native-active? lean4-hx-native)
-                    (> (static.get-current-line-number) 0))
+           (if (native-active? lean4-hx-native)
                (begin
                  (native-cancel-request! lean4-hx-native)
                  (lean4-hx-request-lean-info!))
@@ -52,15 +51,7 @@
   (native-record-insert! lean4-hx-native))
 
 (define (lean4-hx-on-open document)
-  (native-record-open! lean4-hx-native)
-  ;; LSP startup is asynchronous. Yield to Helix before issuing the first
-  ;; request so the language server has received didOpen for this document.
-  (hx.enqueue-thread-local-callback-with-delay
-   10000
-   (lambda ()
-     (if (native-active? lean4-hx-native)
-         (lean4-hx-request-lean-info!)
-         #f))))
+  (native-record-open! lean4-hx-native))
 
 (define (lean4-hx-on-close closed-event)
   (native-record-close! lean4-hx-native))
@@ -71,6 +62,18 @@
         (native-record-callback! lean4-hx-native generation
                                  (value->jsexpr-string result))
         (lean4-hx-status "lean4.hx Lean callback"))
+      #f))
+
+(define (lean4-hx-on-definition generation result)
+  (if (native-active? lean4-hx-native)
+      (native-record-navigation! lean4-hx-native generation
+                                (value->jsexpr-string result))
+      #f))
+
+(define (lean4-hx-on-rpc generation result)
+  (if (native-active? lean4-hx-native)
+      (native-record-rpc! lean4-hx-native generation
+                          (value->jsexpr-string result))
       #f))
 
 (define (lean4-hx-request-lean-info!)
@@ -85,9 +88,17 @@
           (native-record-request! lean4-hx-native path line character)
           (let ([generation (native-begin-request! lean4-hx-native path line character)])
             (if (> generation 0)
-                (hx.send-lsp-command "lean" "$/lean/plainGoal" params
-                                     (lambda (result)
-                                       (lean4-hx-on-lean-info generation result)))
+                (begin
+                  (hx.send-lsp-command "lean" "$/lean/plainGoal" params
+                                       (lambda (result)
+                                         (lean4-hx-on-lean-info generation result)))
+                  (hx.send-lsp-command "lean" "textDocument/definition" params
+                                       (lambda (result)
+                                         (lean4-hx-on-definition generation result)))
+                  (hx.send-lsp-command "lean" "$/lean/rpc/connect"
+                                       (hash "uri" uri)
+                                       (lambda (result)
+                                         (lean4-hx-on-rpc generation result))))
                 #f))
           (lean4-hx-status "lean4.hx Lean request"))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))

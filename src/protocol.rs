@@ -398,6 +398,10 @@ impl<'de> Deserialize<'de> for TaggedText {
         let v = Value::deserialize(d)?;
         match &v {
             Value::String(t) => Ok(Self::Text(t.clone())),
+            Value::Object(o) if o.len() == 1 && o.contains_key("text") => o["text"]
+                .as_str()
+                .map(|t| Self::Text(t.to_owned()))
+                .ok_or_else(|| de::Error::custom("TaggedText.text must be a string")),
             Value::Object(o) if o.len() == 1 && o.contains_key("append") => {
                 let a = o["append"]
                     .as_array()
@@ -556,6 +560,16 @@ mod tests {
         let source = json!({"append":["x",{"tag":[{"kind":"type"},{"append":["y"]}]}]});
         let text: TaggedText = serde_json::from_value(source.clone()).unwrap();
         assert_eq!(serde_json::to_value(text).unwrap(), source);
+    }
+
+    #[test]
+    fn tagged_text_accepts_lean_text_object_shape() {
+        let source = json!({"append":[{"text":"⊢ "},{"text":"Nat"}]});
+        let text: TaggedText = serde_json::from_value(source).unwrap();
+        assert_eq!(text, TaggedText::Append(vec![
+            TaggedText::Text("⊢ ".into()),
+            TaggedText::Text("Nat".into()),
+        ]));
     }
 
     #[test]

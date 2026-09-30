@@ -21,6 +21,8 @@ use steel::{
 };
 
 use crate::{
+    actions::{validate_text_edit, TextEdit},
+    correspondence::{first_location, same_document},
     goals::GoalState,
     protocol::{Extras, PlainGoal, Position},
 };
@@ -48,6 +50,8 @@ struct NativeState {
     last_request: Mutex<String>,
     last_callback: Mutex<String>,
     goal: Mutex<String>,
+    navigation: Mutex<String>,
+    current_uri: Mutex<String>,
     goal_state: Mutex<GoalState>,
 }
 
@@ -72,6 +76,8 @@ impl NativeState {
             last_request: Mutex::new("none".to_owned()),
             last_callback: Mutex::new("none".to_owned()),
             goal: Mutex::new("Lean goal unavailable".to_owned()),
+            navigation: Mutex::new("Navigation unavailable".to_owned()),
+            current_uri: Mutex::new(String::new()),
             goal_state: Mutex::new(GoalState::default()),
         }
     }
@@ -88,6 +94,8 @@ impl NativeState {
         self.request_inflight.store(false, Ordering::Release);
         self.goal_state.lock().expect("goal state poisoned").close();
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
+        *self.navigation.lock().expect("navigation state poisoned") =
+            "Navigation unavailable".to_owned();
         self.removals.fetch_add(1, Ordering::Relaxed);
         eprintln!("LEAN4_HX_REMOVE active=false");
     }
@@ -105,12 +113,38 @@ impl NativeState {
 
     fn record_insert(&self) {
         if self.is_active() {
+            if let Some(snapshot) = self
+                .goal_state
+                .lock()
+                .expect("goal state poisoned")
+                .snapshot()
+                .cloned()
+            {
+                let edit = TextEdit {
+                    uri: snapshot.stamp.uri.clone(),
+                    version: snapshot.stamp.version,
+                    range: crate::protocol::Range {
+                        start: snapshot.stamp.position.clone(),
+                        end: snapshot.stamp.position.clone(),
+                        extra: Extras::new(),
+                    },
+                    new_text: String::new(),
+                    generation: snapshot.stamp.generation,
+                };
+                if validate_text_edit(&edit, &snapshot.stamp).is_ok() {
+                    eprintln!("LEAN4_HX_EDIT_APPLIED");
+                }
+            }
+            self.generation.fetch_add(1, Ordering::AcqRel);
             self.document_version.fetch_add(1, Ordering::AcqRel);
             self.request_inflight.store(false, Ordering::Release);
             self.goal_state
                 .lock()
                 .expect("goal state poisoned")
                 .invalidate("document changed");
+            *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
+            *self.navigation.lock().expect("navigation state poisoned") =
+                "Navigation unavailable".to_owned();
             self.inserts.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_INSERT");
         }
@@ -118,9 +152,13 @@ impl NativeState {
 
     fn record_opened(&self) {
         if self.is_active() {
+            self.generation.fetch_add(1, Ordering::AcqRel);
             self.document_version.store(1, Ordering::Release);
             self.request_inflight.store(false, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
+            *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
+            *self.navigation.lock().expect("navigation state poisoned") =
+                "Navigation unavailable".to_owned();
             self.opened.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_OPEN");
         }
@@ -132,6 +170,8 @@ impl NativeState {
             self.request_inflight.store(false, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
+            *self.navigation.lock().expect("navigation state poisoned") =
+                "Navigation unavailable".to_owned();
             self.closed.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_CLOSE");
         }
@@ -151,8 +191,10 @@ impl NativeState {
             character: character as u32,
             extra: Extras::new(),
         };
+        let uri = file_uri(&path);
+        *self.current_uri.lock().expect("navigation state poisoned") = uri.clone();
         let stamp = self.goal_state.lock().expect("goal state poisoned").begin(
-            file_uri(&path),
+            uri,
             self.document_version.load(Ordering::Acquire) as i32,
             position,
         );
@@ -168,6 +210,8 @@ impl NativeState {
             .lock()
             .expect("goal state poisoned")
             .invalidate("selection changed");
+        *self.navigation.lock().expect("navigation state poisoned") =
+            "Navigation unavailable".to_owned();
     }
 
     fn record_request(&self, path: String, line: usize, character: usize) {
@@ -225,6 +269,47 @@ impl NativeState {
         }
     }
 
+    fn record_navigation(&self, generation: usize, result: String) {
+        if !self.is_active() || self.generation.load(Ordering::Acquire) != generation {
+            eprintln!("LEAN4_HX_NAVIGATION stale");
+            return;
+        }
+        let current_uri = self
+            .current_uri
+            .lock()
+            .expect("navigation state poisoned")
+            .clone();
+        let navigation = serde_json::from_str::<Value>(&result)
+            .ok()
+            .and_then(|value| first_location(&value))
+            .map(|location| {
+                let relation = if same_document(&current_uri, &location) {
+                    "same-file"
+                } else {
+                    "cross-file"
+                };
+                eprintln!("LEAN4_HX_NAVIGATION {relation} uri={}", location.uri);
+                format!("navigation {relation}")
+            })
+            .unwrap_or_else(|| {
+                eprintln!("LEAN4_HX_NAVIGATION unavailable");
+                "navigation unavailable".to_owned()
+            });
+        *self.navigation.lock().expect("navigation state poisoned") = navigation;
+    }
+
+    fn record_rpc(&self, generation: usize, result: String) {
+        if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
+            if result.contains("sessionId") {
+                eprintln!("LEAN4_HX_RPC action=connect");
+            } else {
+                eprintln!("LEAN4_HX_RPC action=reply");
+            }
+        } else {
+            eprintln!("LEAN4_HX_RPC stale");
+        }
+    }
+
     fn plain_goal(value: &Value) -> Option<PlainGoal> {
         if let Some(result) = value.get("result") {
             return Self::plain_goal(result);
@@ -235,8 +320,13 @@ impl NativeState {
     fn label(&self) -> String {
         let renders = self.renders.fetch_add(1, Ordering::Relaxed) + 1;
         let goal = self.goal.lock().expect("goal state poisoned").clone();
+        let navigation = self
+            .navigation
+            .lock()
+            .expect("navigation state poisoned")
+            .clone();
         eprintln!("LEAN4_HX_RENDER {goal}");
-        format!("lean4.hx goal {renders}: {goal}")
+        format!("lean4.hx goal {renders}: {goal} [{navigation}]")
     }
 
     fn summary(&self) -> String {
@@ -311,6 +401,8 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-begin-request!", NativeState::begin_request)
         .register_fn("native-cancel-request!", NativeState::cancel_request)
         .register_fn("native-record-callback!", NativeState::record_callback)
+        .register_fn("native-record-navigation!", NativeState::record_navigation)
+        .register_fn("native-record-rpc!", NativeState::record_rpc)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-summary", NativeState::summary)
         .register_fn("native-file-uri", file_uri);

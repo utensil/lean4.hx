@@ -230,7 +230,9 @@ def main() -> int:
             baseline["hover"] = c.request("textDocument/hover", {**text_document, "position": pos(2, 4)})
             baseline["completion"] = c.request("textDocument/completion", {**text_document, "position": pos(2, 6)})
             baseline["definition"] = c.request("textDocument/definition", {**text_document, "position": pos(2, 4)})
-            baseline["crossFileDefinition"] = c.request("textDocument/definition", {**text_document, "position": pos(2, 20)})
+            # `Nat` resolves into Lean's imported Prelude source, providing a
+            # real cross-file location fixture.
+            baseline["crossFileDefinition"] = c.request("textDocument/definition", {**text_document, "position": pos(2, 13)})
             baseline["references"] = c.request("textDocument/references", {**text_document, "position": pos(2, 4), "context": {"includeDeclaration": True}})
             baseline["codeAction"] = c.request("textDocument/codeAction", {**text_document, "range": {"start": pos(7, 7), "end": pos(7, 20)}, "context": {"diagnostics": diagnostics[-1].get("params", {}).get("diagnostics", []) if diagnostics else []}})
             baseline["inlayHint"] = c.request("textDocument/inlayHint", {**text_document, "range": {"start": pos(0, 0), "end": pos(6, 15)}})
@@ -241,7 +243,7 @@ def main() -> int:
                 "definition": isinstance(baseline["definition"], list),
                 "definitionCrossFile": any(
                     isinstance(item, dict)
-                    and "Helper.lean" in str(item.get("targetUri", item.get("uri", "")))
+                    and item.get("targetUri", item.get("uri", "")) != str(uri)
                     for item in (baseline["crossFileDefinition"] if isinstance(baseline["crossFileDefinition"], list) else [])
                 ),
                 "definitionItems": [
@@ -263,7 +265,7 @@ def main() -> int:
             }
             report["checks"]["ordinary_lsp_baseline"]["passed"] = all(
                 report["checks"]["ordinary_lsp_baseline"][key]
-                for key in ("hover", "completion", "definition", "references", "codeAction", "inlayHint")
+                for key in ("hover", "completion", "definition", "definitionCrossFile", "references", "codeAction", "inlayHint")
             )
             connect = c.request("$/lean/rpc/connect", {"uri": uri})
             session_id = connect.get("sessionId") if isinstance(connect, dict) else None

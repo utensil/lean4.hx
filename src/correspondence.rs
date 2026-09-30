@@ -1,6 +1,6 @@
 //! Source and goal correspondence without assuming that every location is local.
 
-use crate::protocol::{Location, TaggedText};
+use crate::protocol::{Extras, Location, TaggedText};
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +51,30 @@ pub fn navigate(current_uri: &str, location: Location) -> Navigation {
 
 pub fn same_document(current_uri: &str, location: &Location) -> bool {
     current_uri == location.uri
+}
+
+/// Accept both LSP Location and LocationLink definition responses.
+pub fn first_location(value: &Value) -> Option<Location> {
+    if let Some(result) = value.get("result") {
+        return first_location(result);
+    }
+    if let Some(values) = value.as_array() {
+        return values.iter().find_map(first_location);
+    }
+    let object = value.as_object()?;
+    if object.contains_key("uri") && object.contains_key("range") {
+        return serde_json::from_value(value.clone()).ok();
+    }
+    let uri = object.get("targetUri")?.as_str()?.to_owned();
+    let range = object
+        .get("targetSelectionRange")
+        .or_else(|| object.get("targetRange"))
+        .cloned()?;
+    Some(Location {
+        uri,
+        range: serde_json::from_value(range).ok()?,
+        extra: Extras::new(),
+    })
 }
 
 #[cfg(test)]
@@ -117,5 +141,17 @@ mod tests {
             ),
             Navigation::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn definition_locations_cover_location_and_location_link() {
+        let direct = serde_json::json!([{"uri":"file:///Main.lean","range":{
+            "start":{"line":1,"character":2},"end":{"line":1,"character":7}}}]);
+        assert_eq!(first_location(&direct).unwrap().uri, "file:///Main.lean");
+        let link = serde_json::json!({"result":[{"targetUri":"file:///Helper.lean",
+            "targetRange":{"start":{"line":3,"character":4},"end":{"line":3,"character":10}}}]});
+        let location = first_location(&link).unwrap();
+        assert_eq!(location.uri, "file:///Helper.lean");
+        assert_eq!(location.range.start.character, 4);
     }
 }
