@@ -1,0 +1,11 @@
+[package]
+name = "lean4-hx-workspace"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Documentation-only workspace placeholder for lean4.hx"
+license = "MIT"
+
+[workspace]
+resolver = "2"
+members = ["."]
