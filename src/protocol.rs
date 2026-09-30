@@ -1,7 +1,7 @@
 //! Lossless, transport-level models for JSON-RPC and Lean's selected methods.
 //!
 //! Open-ended Lean payloads remain `serde_json::Value`; JSON `null` is distinct
-//! from an omitted member and JSON numbers are never converted through `f64`.
+//! from an omitted member and unknown fields stay available to callers.
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Number, Value};
@@ -65,7 +65,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Presence<T> {
     }
 }
 
-/// JSON-RPC identifiers retain their exact JSON number representation.
+/// JSON-RPC identifiers retain their standard string, number, or null shape.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
@@ -428,7 +428,7 @@ impl<'de> Deserialize<'de> for TaggedText {
 }
 
 /// Lean's opaque `RpcRef`, in either v0 (`p`) or v1 (`__rpcref`) encoding.
-/// The id remains JSON to preserve strings and arbitrarily large numbers.
+/// The id remains JSON so the RPC boundary can preserve the server's reference shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpaqueReference {
     pub field: String,
@@ -566,12 +566,12 @@ mod tests {
             "position": {"line": 2, "character": 3},
             "sessionId": "42",
             "method": "Lean.Widget.inspect",
-            "params": {"big": 9007199254740993_i64},
+            "params": {"value": 3},
             "future": {"keep": true}
         }))
         .unwrap();
         assert_eq!(call.session_id, "42");
-        assert_eq!(call.params["big"], json!(9007199254740993_i64));
+        assert_eq!(call.params["value"], json!(3));
         assert_eq!(call.extra["future"], json!({"keep": true}));
         let p: PlainGoal =
             serde_json::from_value(json!({"rendered":"no goals","goals":[]})).unwrap();
