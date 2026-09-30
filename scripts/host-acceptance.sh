@@ -144,4 +144,6 @@ echo "host PTY acceptance passed"
 echo "Helix: $(git -C "$helix_dir" rev-parse HEAD)"
 echo "Steel: $(git -C "$steel_dir" rev-parse HEAD)"
 echo "evidence: $pty_log"
-grep -E 'LEAN4_HX_(INSTALL|OPEN|INSERT|CLOSE|REQUEST|CALLBACK|REMOVE)' "$pty_log"
+tr '\r' '\n' <"$pty_log" |
+    grep -F 'LEAN4_HX_' |
+    sed 's/.*\(LEAN4_HX_[A-Z_]*[^[:cntrl:]]*\).*/\1/'
