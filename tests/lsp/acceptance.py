@@ -205,13 +205,13 @@ def main() -> int:
                 "diagnosticNotifications": len(diagnostics),
                 "diagnosticCount": sum(len(n.get("params", {}).get("diagnostics", [])) for n in diagnostics),
                 "diagnosticMessages": [
-                    d.get("message", "").replace(str(root), "<fixture-root>").replace("/Users/utensil/", "<user>/")
+                    d.get("message", "").replace(str(root), "<fixture-root>").replace(str(pathlib.Path.home()), "<user>")
                     for n in diagnostics for d in n.get("params", {}).get("diagnostics", [])
                 ],
                 "diagnosticMethods": sorted({n.get("method") for n in diagnostics}),
                 "progressNotifications": len(progress),
                 "progressMethods": sorted({n.get("method") for n in progress}),
-                "passed": bool(diagnostics),
+                "passed": bool(diagnostics) and bool(progress),
             }
             text_document = {"textDocument": {"uri": uri}}
             position = {"line": 5, "character": 2}  # the `exact` tactic
@@ -261,6 +261,10 @@ def main() -> int:
                 "inlayHint": isinstance(baseline["inlayHint"], list),
                 "unsupported": [k for k, v in baseline.items() if v is None],
             }
+            report["checks"]["ordinary_lsp_baseline"]["passed"] = all(
+                report["checks"]["ordinary_lsp_baseline"][key]
+                for key in ("hover", "completion", "definition", "references", "codeAction", "inlayHint")
+            )
             connect = c.request("$/lean/rpc/connect", {"uri": uri})
             session_id = connect.get("sessionId") if isinstance(connect, dict) else None
             rpc_params = {"textDocument": {"uri": uri}, "position": position, "sessionId": session_id, "method": "Lean.Widget.getInteractiveGoals", "params": goal_params}
@@ -273,7 +277,7 @@ def main() -> int:
                 "resultPresent": rpc_result is not None,
                 "resultKeys": sorted(rpc_result) if isinstance(rpc_result, dict) else [],
                 "refsReleased": len(refs),
-                "releaseSent": True,
+                "releaseIssued": True,
                 "passed": isinstance(connect, dict) and "sessionId" in connect and rpc_result is not None,
             }
             report["passed"] = all(v.get("passed", True) for v in report["checks"].values())

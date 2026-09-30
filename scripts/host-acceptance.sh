@@ -36,6 +36,9 @@ expected_steel=$(pin_value steel commit)
 hx_bin=${HOST_HELIX_BIN:-$helix_dir/target/debug/hx}
 [ -x "$hx_bin" ] || { echo "build pinned Helix first: $hx_bin" >&2; exit 1; }
 command -v expect >/dev/null 2>&1 || { echo "expect is required for PTY acceptance" >&2; exit 1; }
+elan_bin=$(command -v elan || true)
+[ -n "$elan_bin" ] || { echo "elan is required for PTY acceptance" >&2; exit 1; }
+elan_dir=$(CDPATH= cd -- "$(dirname "$elan_bin")" && pwd)
 
 cd "$repo_root"
 cargo build --release --locked
@@ -85,7 +88,7 @@ set env(HELIX_RUNTIME) "$runtime_dir"
 set env(XDG_CONFIG_HOME) "$config_dir"
 set env(HELIX_STEEL_CONFIG) "$helix_config"
 set env(STEEL_HOME) "$steel_home"
-set env(PATH) "/Users/utensil/.elan/bin:\$env(PATH)"
+set env(PATH) "$elan_dir:\$env(PATH)"
 cd "$project_dir"
 spawn "$hx_bin" Main.lean
 expect "LEAN4_HX_INSTALL"
