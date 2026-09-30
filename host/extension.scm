@@ -1,35 +1,75 @@
 ;; Load this file from a Helix init.scm after installing the cdylib into
-;; STEEL_HOME/native.
+;; STEEL_HOME/native, then call (lean4-hx-install!).
 (require-builtin helix/core/editor as editor.)
 (require-builtin helix/core/misc as hx.)
+(require-builtin helix/core/static as static.)
 (require-builtin helix/components as components.)
 (#%require-dylib "liblean4_hx"
-  (only-in native-state native-label))
+  (only-in native-state native-activate! native-deactivate! native-active?
+           native-record-selection! native-record-insert! native-record-open!
+           native-record-close! native-record-request! native-record-callback!
+           native-label native-summary native-file-uri))
 
 (provide lean4-hx-install!)
-(provide lean4-hx-request-lean-info!)
 (provide lean4-hx-remove-component!)
-(provide lean4-hx-selection-count)
-(provide lean4-hx-insert-count)
-(provide lean4-hx-callback-count)
+(provide lean4-hx-request-lean-info!)
+(provide lean4-hx-summary)
+(provide lean4-hx-native)
 
-(define lean4-hx-selection-count 0)
-(define lean4-hx-insert-count 0)
-(define lean4-hx-callback-count 0)
+;; The value is opaque to Scheme. All counters and lifecycle state are Rust-owned.
+(define lean4-hx-native (native-state))
+(define lean4-hx-component #f)
+(define lean4-hx-installed? #f)
+
+(define (lean4-hx-summary)
+  (native-summary lean4-hx-native))
+
+(define (lean4-hx-status prefix)
+  (hx.set-status! (string-append prefix ": " (lean4-hx-summary))))
 
 (define (lean4-hx-on-selection view)
-  (set! lean4-hx-selection-count (+ lean4-hx-selection-count 1))
-  (hx.set-status! (string-append "lean4.hx selection hook (view " (number->string view) ")")))
+  (native-record-selection! lean4-hx-native)
+  (lean4-hx-status "lean4.hx selection"))
+
+(define (lean4-hx-on-insert character)
+  (native-record-insert! lean4-hx-native))
+
+(define (lean4-hx-on-open document)
+  (native-record-open! lean4-hx-native)
+  ;; LSP startup is asynchronous. Yield to Helix before issuing the first
+  ;; request so the language server has received didOpen for this document.
+  (hx.enqueue-thread-local-callback-with-delay
+   10000
+   (lambda ()
+     (if (native-active? lean4-hx-native)
+         (lean4-hx-request-lean-info!)
+         #f))))
+
+(define (lean4-hx-on-close closed-event)
+  (native-record-close! lean4-hx-native))
 
 (define (lean4-hx-on-lean-info result)
-  (set! lean4-hx-callback-count (+ lean4-hx-callback-count 1))
-  (hx.set-status! (string-append "lean4.hx Lean callback: " (if result "reply" "no reply"))))
+  (if (native-active? lean4-hx-native)
+      (begin
+        (native-record-callback! lean4-hx-native
+                                 (if result "reply" "null"))
+        (lean4-hx-status "lean4.hx Lean callback"))
+      #f))
 
 (define (lean4-hx-request-lean-info!)
-  (hx.send-lsp-command "lean" "$/lean/plainGoal" (hash) lean4-hx-on-lean-info))
-
-(define lean4-hx-component #f)
-(define lean4-hx-native (native-state))
+  (let ([path (static.cx->current-file)])
+    (if path
+        (let* ([line (static.get-current-line-number)]
+               [character (static.get-current-line-character "utf-16")]
+               [uri (native-file-uri path)]
+               [params (hash "textDocument" (hash "uri" uri)
+                             "position" (hash "line" line
+                                               "character" character))])
+          (native-record-request! lean4-hx-native path line character)
+          (hx.send-lsp-command "lean" "$/lean/plainGoal" params
+                               lean4-hx-on-lean-info)
+          (lean4-hx-status "lean4.hx Lean request"))
+        (hx.set-warning! "lean4.hx: current document has no file URI"))))
 
 (define (lean4-hx-render state area frame)
   (components.frame-set-string! frame
@@ -39,20 +79,37 @@
                                (components.style)))
 
 (define (lean4-hx-handle-event state event)
-  (components.event-result/ignore))
+  components.event-result/ignore)
 
 (define (lean4-hx-install!)
-  (editor.register-hook 'selection-did-change lean4-hx-on-selection)
-  (editor.register-hook 'post-insert-char
-                        (lambda (character)
-                          (set! lean4-hx-insert-count (+ lean4-hx-insert-count 1))))
-  (set! lean4-hx-component
-        (components.new-component! "lean4-hx-component" lean4-hx-native lean4-hx-render
-                                    (hash "handle_event" lean4-hx-handle-event)))
-  (hx.push-component! lean4-hx-component)
-  "lean4.hx installed")
+  (if lean4-hx-installed?
+      "lean4.hx already installed"
+      (begin
+        ;; Hooks are generation-scoped by Helix. Removing by name also clears
+        ;; a component left behind by a previous init.scm reload.
+        (hx.pop-last-component-by-name! "lean4-hx-component")
+        (native-activate! lean4-hx-native)
+        (editor.register-hook 'selection-did-change lean4-hx-on-selection)
+        (editor.register-hook 'post-insert-char lean4-hx-on-insert)
+        (editor.register-hook 'document-opened lean4-hx-on-open)
+        (editor.register-hook 'document-closed lean4-hx-on-close)
+        (set! lean4-hx-component
+              (components.new-component! "lean4-hx-component" lean4-hx-native
+                                          lean4-hx-render
+                                          (hash "handle_event"
+                                                lean4-hx-handle-event)))
+        (hx.push-component! lean4-hx-component)
+        (set! lean4-hx-installed? #t)
+        (lean4-hx-status "lean4.hx installed")
+        "lean4.hx installed")))
 
 (define (lean4-hx-remove-component!)
-  (hx.pop-last-component-by-name! "lean4-hx-component")
-  (set! lean4-hx-component #f)
+  (if lean4-hx-component
+      (begin
+        (hx.pop-last-component-by-name! "lean4-hx-component")
+        (set! lean4-hx-component #f))
+      #f)
+  (native-deactivate! lean4-hx-native)
+  (set! lean4-hx-installed? #f)
+  (lean4-hx-status "lean4.hx removed")
   "lean4.hx component removed")
