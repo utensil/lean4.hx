@@ -86,18 +86,19 @@ pub fn apply_text_edit(
 fn byte_offset(source: &str, position: &Position) -> Result<usize, ActionError> {
     let mut prefix = 0usize;
     let mut line = None;
-    for (index, candidate) in source.split_inclusive('\n').enumerate() {
+    for (index, candidate) in source.split('\n').enumerate() {
         if index == position.line as usize {
             line = Some(candidate);
             break;
         }
-        prefix += candidate.len();
+        prefix += candidate.len() + 1;
     }
     let line =
         line.ok_or_else(|| ActionError::InvalidRange("line is outside the document".into()))?;
+    let content = line.strip_suffix('\r').unwrap_or(line);
     let mut utf16 = 0u32;
     let mut bytes = 0usize;
-    for ch in line.chars() {
+    for ch in content.chars() {
         if utf16 == position.character {
             return Ok(prefix + bytes);
         }
@@ -198,6 +199,52 @@ mod tests {
             extra: Extras::new(),
         };
         assert_eq!(apply_text_edit("aé\nβ", &range, "x").unwrap(), "ax\nβ");
+    }
+
+    #[test]
+    fn eof_positions_accept_empty_and_trailing_lines() {
+        let empty = Range {
+            start: Position {
+                line: 0,
+                character: 0,
+                extra: Extras::new(),
+            },
+            end: Position {
+                line: 0,
+                character: 0,
+                extra: Extras::new(),
+            },
+            extra: Extras::new(),
+        };
+        assert_eq!(apply_text_edit("", &empty, "x").unwrap(), "x");
+        let trailing = Range {
+            start: Position {
+                line: 1,
+                character: 0,
+                extra: Extras::new(),
+            },
+            end: Position {
+                line: 1,
+                character: 0,
+                extra: Extras::new(),
+            },
+            extra: Extras::new(),
+        };
+        assert_eq!(apply_text_edit("a\n", &trailing, "b").unwrap(), "a\nb");
+        let crlf = Range {
+            start: Position {
+                line: 0,
+                character: 1,
+                extra: Extras::new(),
+            },
+            end: Position {
+                line: 0,
+                character: 1,
+                extra: Extras::new(),
+            },
+            extra: Extras::new(),
+        };
+        assert_eq!(apply_text_edit("a\r\n", &crlf, "b").unwrap(), "ab\r\n");
     }
 
     #[test]

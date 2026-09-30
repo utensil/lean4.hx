@@ -13,6 +13,8 @@ use std::{
     },
 };
 
+use serde_json::Value;
+
 use steel::{
     rvals::Custom,
     steel_vm::ffi::{FFIModule, RegisterFFIFn},
@@ -35,8 +37,10 @@ struct NativeState {
     closed: AtomicUsize,
     requests: AtomicUsize,
     callbacks: AtomicUsize,
+    generation: AtomicUsize,
     last_request: Mutex<String>,
     last_callback: Mutex<String>,
+    goal: Mutex<String>,
 }
 
 impl Custom for NativeState {}
@@ -54,8 +58,10 @@ impl NativeState {
             closed: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             callbacks: AtomicUsize::new(0),
+            generation: AtomicUsize::new(0),
             last_request: Mutex::new("none".to_owned()),
             last_callback: Mutex::new("none".to_owned()),
+            goal: Mutex::new("Lean goal unavailable".to_owned()),
         }
     }
 
@@ -67,6 +73,8 @@ impl NativeState {
 
     fn deactivate(&self) {
         self.active.store(false, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         self.removals.fetch_add(1, Ordering::Relaxed);
         eprintln!("LEAN4_HX_REMOVE active=false");
     }
@@ -98,9 +106,15 @@ impl NativeState {
 
     fn record_closed(&self) {
         if self.is_active() {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+            *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             self.closed.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_CLOSE");
         }
+    }
+
+    fn begin_request(&self) -> usize {
+        self.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     fn record_request(&self, path: String, line: usize, character: usize) {
@@ -115,18 +129,54 @@ impl NativeState {
         }
     }
 
-    fn record_callback(&self, result: String) {
-        if self.is_active() {
+    fn record_callback(&self, generation: usize, result: String) {
+        if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
             self.callbacks.fetch_add(1, Ordering::Relaxed);
             let mut last = self.last_callback.lock().expect("callback state poisoned");
-            *last = result.clone();
-            eprintln!("LEAN4_HX_CALLBACK result={result}");
+            *last = "reply".to_owned();
+            let goal = if result == "null" {
+                "Lean goal unavailable".to_owned()
+            } else {
+                serde_json::from_str::<Value>(&result)
+                    .ok()
+                    .and_then(|value| Self::goal_text(&value))
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| result.clone())
+            };
+            *self.goal.lock().expect("goal state poisoned") = goal.clone();
+            eprintln!("LEAN4_HX_CALLBACK result=reply");
+            eprintln!("LEAN4_HX_GOAL generation={generation} text={goal}");
+            if goal != "Lean goal unavailable" && !goal.is_empty() {
+                eprintln!("LEAN4_HX_GOAL_AVAILABLE");
+            }
+        } else {
+            eprintln!("LEAN4_HX_CALLBACK result=stale");
         }
+    }
+
+    fn goal_text(value: &Value) -> Option<String> {
+        if let Some(rendered) = value.get("rendered").and_then(Value::as_str) {
+            return Some(rendered.to_owned());
+        }
+        if let Some(result) = value.get("result") {
+            if let Some(text) = Self::goal_text(result) {
+                return Some(text);
+            }
+        }
+        value.get("goals").and_then(Value::as_array).map(|goals| {
+            goals
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
     }
 
     fn label(&self) -> String {
         let renders = self.renders.fetch_add(1, Ordering::Relaxed) + 1;
-        format!("lean4.hx native {renders} {}", self.summary())
+        let goal = self.goal.lock().expect("goal state poisoned").clone();
+        eprintln!("LEAN4_HX_RENDER {goal}");
+        format!("lean4.hx goal {renders}: {goal}")
     }
 
     fn summary(&self) -> String {
@@ -198,6 +248,7 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-record-open!", NativeState::record_opened)
         .register_fn("native-record-close!", NativeState::record_closed)
         .register_fn("native-record-request!", NativeState::record_request)
+        .register_fn("native-begin-request!", NativeState::begin_request)
         .register_fn("native-record-callback!", NativeState::record_callback)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-summary", NativeState::summary)

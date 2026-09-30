@@ -8,7 +8,7 @@
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-insert! native-record-open!
            native-record-close! native-record-request! native-record-callback!
-           native-label native-summary native-file-uri))
+           native-begin-request! native-label native-summary native-file-uri))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -29,6 +29,9 @@
 
 (define (lean4-hx-on-selection view)
   (native-record-selection! lean4-hx-native)
+  (if (native-active? lean4-hx-native)
+      (lean4-hx-request-lean-info!)
+      #f)
   (lean4-hx-status "lean4.hx selection"))
 
 (define (lean4-hx-on-insert character)
@@ -48,11 +51,11 @@
 (define (lean4-hx-on-close closed-event)
   (native-record-close! lean4-hx-native))
 
-(define (lean4-hx-on-lean-info result)
+(define (lean4-hx-on-lean-info generation result)
   (if (native-active? lean4-hx-native)
       (begin
-        (native-record-callback! lean4-hx-native
-                                 (if result "reply" "null"))
+        (native-record-callback! lean4-hx-native generation
+                                 (value->jsexpr-string result))
         (lean4-hx-status "lean4.hx Lean callback"))
       #f))
 
@@ -66,8 +69,10 @@
                              "position" (hash "line" line
                                                "character" character))])
           (native-record-request! lean4-hx-native path line character)
-          (hx.send-lsp-command "lean" "$/lean/plainGoal" params
-                               lean4-hx-on-lean-info)
+          (let ([generation (native-begin-request! lean4-hx-native)])
+            (hx.send-lsp-command "lean" "$/lean/plainGoal" params
+                                 (lambda (result)
+                                   (lean4-hx-on-lean-info generation result))))
           (lean4-hx-status "lean4.hx Lean request"))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
 

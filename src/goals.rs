@@ -65,10 +65,21 @@ impl GoalSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GoalState {
     active: Option<RequestStamp>,
     snapshot: Option<GoalSnapshot>,
+    next_generation: u64,
+}
+
+impl Default for GoalState {
+    fn default() -> Self {
+        Self {
+            active: None,
+            snapshot: None,
+            next_generation: 0,
+        }
+    }
 }
 
 impl GoalState {
@@ -78,10 +89,8 @@ impl GoalState {
         version: i32,
         position: Position,
     ) -> RequestStamp {
-        let generation = self
-            .active
-            .as_ref()
-            .map_or(1, |stamp| stamp.generation.saturating_add(1));
+        self.next_generation = self.next_generation.saturating_add(1);
+        let generation = self.next_generation;
         let stamp = RequestStamp {
             uri: uri.into(),
             version,
@@ -103,6 +112,7 @@ impl GoalState {
     pub fn invalidate(&mut self, reason: impl Into<String>) {
         if let Some(active) = self.active.clone() {
             self.snapshot = Some(GoalSnapshot::unavailable(active, reason));
+            self.active = None;
         }
     }
 
@@ -168,7 +178,7 @@ mod tests {
             extra: Extras::new(),
         };
         let snapshot = GoalSnapshot::from_plain_goal(
-            stamp,
+            stamp.clone(),
             PlainGoal {
                 rendered: "⊢ n = n".into(),
                 goals: vec!["n = n".into()],
@@ -188,7 +198,17 @@ mod tests {
             state.snapshot().unwrap().display_text(),
             "Lean unavailable: server restarting"
         );
+        assert!(!state.accept(GoalSnapshot::from_plain_goal(
+            stamp.clone(),
+            PlainGoal {
+                rendered: "late".into(),
+                goals: vec!["late".into()],
+                extra: Extras::new(),
+            },
+        )));
         state.close();
         assert!(state.snapshot().is_none());
+        let reopened = state.begin("file:///Main.lean", 1, position());
+        assert!(reopened.generation > stamp.generation);
     }
 }

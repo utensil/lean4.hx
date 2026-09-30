@@ -93,6 +93,9 @@ cd "$project_dir"
 spawn "$hx_bin" Main.lean
 expect "LEAN4_HX_INSTALL"
 expect "LEAN4_HX_CALLBACK result=reply"
+send "j"
+sleep 2
+expect "LEAN4_HX_GOAL_AVAILABLE"
 send "i"
 send "X"
 send "\\033"
@@ -132,6 +135,8 @@ for marker in \
     'LEAN4_HX_CLOSE' \
     'LEAN4_HX_REQUEST line=0 character=0 uri=file://' \
     'LEAN4_HX_CALLBACK result=reply' \
+    'LEAN4_HX_GOAL_AVAILABLE' \
+    'LEAN4_HX_CALLBACK result=stale' \
     'LEAN4_HX_REMOVE active=false'; do
     grep -F "$marker" "$pty_log" >/dev/null || {
         echo "missing PTY marker: $marker; preserved evidence at $run_dir" >&2
