@@ -3,8 +3,16 @@ name = "lean4-hx-workspace"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Documentation-only workspace placeholder for lean4.hx"
+description = "Bounded Helix/Steel B2 probe for Lean editor integration"
 license = "MIT"
+
+[lib]
+name = "lean4_hx_b2"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+steel-core = { git = "https://github.com/utensil/steel.git", rev = "24cd21598c091fb88bc10a6375a1ded25e677c37", features = ["dylibs", "sync"] }
+abi_stable = "0.11.1"
 
 [workspace]
 resolver = "2"
