@@ -12,6 +12,8 @@ use steel::{
     steel_vm::ffi::{FFIModule, RegisterFFIFn},
 };
 
+pub mod protocol;
+
 #[derive(Debug)]
 struct B2NativeState {
     renders: AtomicUsize,

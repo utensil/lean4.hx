@@ -722,6 +722,8 @@ name = "lean4-hx-workspace"
 version = "0.0.0"
 dependencies = [
  "abi_stable",
+ "serde",
+ "serde_json",
  "steel-core",
 ]
 
