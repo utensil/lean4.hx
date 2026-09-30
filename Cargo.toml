@@ -1,13 +1,13 @@
 [package]
-name = "lean4-hx-workspace"
+name = "lean4-hx"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Bounded Helix/Steel B2 probe for Lean editor integration"
+description = "Lean-aware Helix integration"
 license = "MIT"
 
 [lib]
-name = "lean4_hx_b2"
+name = "lean4_hx"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
