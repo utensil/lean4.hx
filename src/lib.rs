@@ -20,6 +20,11 @@ use steel::{
     steel_vm::ffi::{FFIModule, RegisterFFIFn},
 };
 
+use crate::{
+    goals::GoalState,
+    protocol::{Extras, PlainGoal, Position},
+};
+
 pub mod actions;
 pub mod correspondence;
 pub mod goals;
@@ -38,9 +43,12 @@ struct NativeState {
     requests: AtomicUsize,
     callbacks: AtomicUsize,
     generation: AtomicUsize,
+    document_version: AtomicUsize,
+    request_inflight: AtomicBool,
     last_request: Mutex<String>,
     last_callback: Mutex<String>,
     goal: Mutex<String>,
+    goal_state: Mutex<GoalState>,
 }
 
 impl Custom for NativeState {}
@@ -59,9 +67,12 @@ impl NativeState {
             requests: AtomicUsize::new(0),
             callbacks: AtomicUsize::new(0),
             generation: AtomicUsize::new(0),
+            document_version: AtomicUsize::new(1),
+            request_inflight: AtomicBool::new(false),
             last_request: Mutex::new("none".to_owned()),
             last_callback: Mutex::new("none".to_owned()),
             goal: Mutex::new("Lean goal unavailable".to_owned()),
+            goal_state: Mutex::new(GoalState::default()),
         }
     }
 
@@ -74,6 +85,8 @@ impl NativeState {
     fn deactivate(&self) {
         self.active.store(false, Ordering::Release);
         self.generation.fetch_add(1, Ordering::AcqRel);
+        self.request_inflight.store(false, Ordering::Release);
+        self.goal_state.lock().expect("goal state poisoned").close();
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         self.removals.fetch_add(1, Ordering::Relaxed);
         eprintln!("LEAN4_HX_REMOVE active=false");
@@ -92,6 +105,12 @@ impl NativeState {
 
     fn record_insert(&self) {
         if self.is_active() {
+            self.document_version.fetch_add(1, Ordering::AcqRel);
+            self.request_inflight.store(false, Ordering::Release);
+            self.goal_state
+                .lock()
+                .expect("goal state poisoned")
+                .invalidate("document changed");
             self.inserts.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_INSERT");
         }
@@ -99,6 +118,9 @@ impl NativeState {
 
     fn record_opened(&self) {
         if self.is_active() {
+            self.document_version.store(1, Ordering::Release);
+            self.request_inflight.store(false, Ordering::Release);
+            self.goal_state.lock().expect("goal state poisoned").close();
             self.opened.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_OPEN");
         }
@@ -107,14 +129,45 @@ impl NativeState {
     fn record_closed(&self) {
         if self.is_active() {
             self.generation.fetch_add(1, Ordering::AcqRel);
+            self.request_inflight.store(false, Ordering::Release);
+            self.goal_state.lock().expect("goal state poisoned").close();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             self.closed.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_CLOSE");
         }
     }
 
-    fn begin_request(&self) -> usize {
-        self.generation.fetch_add(1, Ordering::AcqRel) + 1
+    fn begin_request(&self, path: String, line: usize, character: usize) -> usize {
+        if !self.is_active()
+            || self
+                .request_inflight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return 0;
+        }
+        let position = Position {
+            line: line as u32,
+            character: character as u32,
+            extra: Extras::new(),
+        };
+        let stamp = self.goal_state.lock().expect("goal state poisoned").begin(
+            file_uri(&path),
+            self.document_version.load(Ordering::Acquire) as i32,
+            position,
+        );
+        self.generation
+            .store(stamp.generation as usize, Ordering::Release);
+        stamp.generation as usize
+    }
+
+    fn cancel_request(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.request_inflight.store(false, Ordering::Release);
+        self.goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .invalidate("selection changed");
     }
 
     fn record_request(&self, path: String, line: usize, character: usize) {
@@ -135,14 +188,32 @@ impl NativeState {
             let mut last = self.last_callback.lock().expect("callback state poisoned");
             *last = "reply".to_owned();
             let goal = if result == "null" {
+                self.goal_state
+                    .lock()
+                    .expect("goal state poisoned")
+                    .invalidate("Lean returned no goal");
                 "Lean goal unavailable".to_owned()
             } else {
-                serde_json::from_str::<Value>(&result)
+                let accepted = serde_json::from_str::<Value>(&result)
                     .ok()
-                    .and_then(|value| Self::goal_text(&value))
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or_else(|| result.clone())
+                    .and_then(|value| Self::plain_goal(&value))
+                    .map(|plain| {
+                        self.goal_state
+                            .lock()
+                            .expect("goal state poisoned")
+                            .accept_plain_goal(generation as u64, plain)
+                    })
+                    .unwrap_or(false);
+                if !accepted {
+                    eprintln!("LEAN4_HX_CALLBACK result=stale");
+                    return;
+                }
+                self.goal_state
+                    .lock()
+                    .expect("goal state poisoned")
+                    .display_text()
             };
+            self.request_inflight.store(false, Ordering::Release);
             *self.goal.lock().expect("goal state poisoned") = goal.clone();
             eprintln!("LEAN4_HX_CALLBACK result=reply");
             eprintln!("LEAN4_HX_GOAL generation={generation} text={goal}");
@@ -154,22 +225,11 @@ impl NativeState {
         }
     }
 
-    fn goal_text(value: &Value) -> Option<String> {
-        if let Some(rendered) = value.get("rendered").and_then(Value::as_str) {
-            return Some(rendered.to_owned());
-        }
+    fn plain_goal(value: &Value) -> Option<PlainGoal> {
         if let Some(result) = value.get("result") {
-            if let Some(text) = Self::goal_text(result) {
-                return Some(text);
-            }
+            return Self::plain_goal(result);
         }
-        value.get("goals").and_then(Value::as_array).map(|goals| {
-            goals
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
+        serde_json::from_value(value.clone()).ok()
     }
 
     fn label(&self) -> String {
@@ -249,6 +309,7 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-record-close!", NativeState::record_closed)
         .register_fn("native-record-request!", NativeState::record_request)
         .register_fn("native-begin-request!", NativeState::begin_request)
+        .register_fn("native-cancel-request!", NativeState::cancel_request)
         .register_fn("native-record-callback!", NativeState::record_callback)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-summary", NativeState::summary)
@@ -257,3 +318,26 @@ pub fn build_module() -> FFIModule {
 }
 
 steel::declare_module!(build_module);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_state_rejects_stale_goal_after_cancel() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        assert_ne!(generation, 0);
+        assert_eq!(state.begin_request("/tmp/Main.lean".into(), 1, 0), 0);
+        state.cancel_request();
+        state.record_callback(
+            generation,
+            r#"{"goals":["n : Nat\n⊢ n = n"],"rendered":"goal"}"#.into(),
+        );
+        assert_eq!(
+            *state.goal.lock().expect("goal state poisoned"),
+            "Lean goal unavailable"
+        );
+    }
+}

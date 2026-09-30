@@ -109,6 +109,16 @@ impl GoalState {
         true
     }
 
+    pub fn accept_plain_goal(&mut self, generation: u64, goal: PlainGoal) -> bool {
+        let Some(stamp) = self.active.clone() else {
+            return false;
+        };
+        if stamp.generation != generation {
+            return false;
+        }
+        self.accept(GoalSnapshot::from_plain_goal(stamp, goal))
+    }
+
     pub fn invalidate(&mut self, reason: impl Into<String>) {
         if let Some(active) = self.active.clone() {
             self.snapshot = Some(GoalSnapshot::unavailable(active, reason));
@@ -123,6 +133,13 @@ impl GoalState {
 
     pub fn snapshot(&self) -> Option<&GoalSnapshot> {
         self.snapshot.as_ref()
+    }
+
+    pub fn display_text(&self) -> String {
+        self.snapshot.as_ref().map_or_else(
+            || "Lean goal unavailable".to_owned(),
+            GoalSnapshot::display_text,
+        )
     }
 }
 

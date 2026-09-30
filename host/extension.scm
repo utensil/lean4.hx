@@ -8,7 +8,8 @@
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-insert! native-record-open!
            native-record-close! native-record-request! native-record-callback!
-           native-begin-request! native-label native-summary native-file-uri))
+           native-begin-request! native-cancel-request! native-label native-summary
+           native-file-uri))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -20,6 +21,7 @@
 (define lean4-hx-native (native-state))
 (define lean4-hx-component #f)
 (define lean4-hx-installed? #f)
+(define lean4-hx-selection-pending? #f)
 
 (define (lean4-hx-summary)
   (native-summary lean4-hx-native))
@@ -29,8 +31,20 @@
 
 (define (lean4-hx-on-selection view)
   (native-record-selection! lean4-hx-native)
-  (if (native-active? lean4-hx-native)
-      (lean4-hx-request-lean-info!)
+  (if (and (native-active? lean4-hx-native)
+           (not lean4-hx-selection-pending?))
+      (begin
+        (set! lean4-hx-selection-pending? #t)
+        (hx.enqueue-thread-local-callback-with-delay
+         250
+         (lambda ()
+           (set! lean4-hx-selection-pending? #f)
+           (if (and (native-active? lean4-hx-native)
+                    (> (static.get-current-line-number) 0))
+               (begin
+                 (native-cancel-request! lean4-hx-native)
+                 (lean4-hx-request-lean-info!))
+               #f))))
       #f)
   (lean4-hx-status "lean4.hx selection"))
 
@@ -69,10 +83,12 @@
                              "position" (hash "line" line
                                                "character" character))])
           (native-record-request! lean4-hx-native path line character)
-          (let ([generation (native-begin-request! lean4-hx-native)])
-            (hx.send-lsp-command "lean" "$/lean/plainGoal" params
-                                 (lambda (result)
-                                   (lean4-hx-on-lean-info generation result))))
+          (let ([generation (native-begin-request! lean4-hx-native path line character)])
+            (if (> generation 0)
+                (hx.send-lsp-command "lean" "$/lean/plainGoal" params
+                                     (lambda (result)
+                                       (lean4-hx-on-lean-info generation result)))
+                #f))
           (lean4-hx-status "lean4.hx Lean request"))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
 
@@ -93,6 +109,7 @@
         ;; Hooks are generation-scoped by Helix. Removing by name also clears
         ;; a component left behind by a previous init.scm reload.
         (hx.pop-last-component-by-name! "lean4-hx-component")
+        (set! lean4-hx-selection-pending? #f)
         (native-activate! lean4-hx-native)
         (editor.register-hook 'selection-did-change lean4-hx-on-selection)
         (editor.register-hook 'post-insert-char lean4-hx-on-insert)
@@ -116,5 +133,6 @@
       #f)
   (native-deactivate! lean4-hx-native)
   (set! lean4-hx-installed? #f)
+  (set! lean4-hx-selection-pending? #f)
   (lean4-hx-status "lean4.hx removed")
   "lean4.hx component removed")
