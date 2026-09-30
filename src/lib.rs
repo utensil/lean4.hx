@@ -18,6 +18,7 @@ use steel::{
     steel_vm::ffi::{FFIModule, RegisterFFIFn},
 };
 
+pub mod correspondence;
 pub mod goals;
 pub mod protocol;
 
