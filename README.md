@@ -38,4 +38,4 @@ or `pagedown` to scroll, and `escape` to return focus to the source buffer.
 Removing the component with `(lean4-hx-remove-component!)` cancels pending goal
 requests and clears the displayed snapshot.
 
-The project is distributed under the [MIT License](LICENSE).
+The project is distributed under the [Apache License 2.0](LICENSE).
