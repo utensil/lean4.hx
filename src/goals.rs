@@ -52,6 +52,7 @@ impl GoalSnapshot {
                         vec![TerminalSpan {
                             text: line.to_owned(),
                             style: TerminalStyle::Plain,
+                            tags: Vec::new(),
                         }]
                     })
                     .collect()
@@ -78,7 +79,16 @@ impl GoalSnapshot {
         let mut rendered_goals = Vec::with_capacity(goals.len());
         let mut styled_goals = Vec::with_capacity(goals.len());
         for goal in goals {
-            let object = goal.as_object()?;
+            let Some(object) = goal.as_object() else {
+                let text = "Lean goal unavailable: malformed interactive goal".to_owned();
+                rendered_goals.push(text.clone());
+                styled_goals.push(vec![vec![TerminalSpan {
+                    text,
+                    style: TerminalStyle::Plain,
+                    tags: Vec::new(),
+                }]]);
+                continue;
+            };
             let prefix = object
                 .get("goalPrefix")
                 .and_then(Value::as_str)
@@ -88,20 +98,35 @@ impl GoalSnapshot {
             let mut target = vec![TerminalSpan {
                 text: prefix.to_owned(),
                 style: TerminalStyle::Goal,
+                tags: Vec::new(),
             }];
             if let Some(value) = object.get("type") {
                 if let Ok(tagged) = serde_json::from_value::<TaggedText>(value.clone()) {
                     target.extend(terminal_spans(&tagged));
-                } else if let Some(text) = value.as_str() {
+                } else {
+                    let text = value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string());
                     target.push(TerminalSpan {
-                        text: text.to_owned(),
+                        text,
                         style: TerminalStyle::Plain,
+                        tags: Vec::new(),
                     });
                 }
             }
             if let Some(hyps) = object.get("hyps").and_then(Value::as_array) {
                 for hyp in hyps {
-                    let hyp_object = hyp.as_object()?;
+                    let Some(hyp_object) = hyp.as_object() else {
+                        let text = "[malformed hypothesis]".to_owned();
+                        plain_lines.push(text.clone());
+                        lines.push(vec![TerminalSpan {
+                            text,
+                            style: TerminalStyle::Plain,
+                            tags: Vec::new(),
+                        }]);
+                        continue;
+                    };
                     let names = hyp_object
                         .get("names")
                         .and_then(Value::as_array)
@@ -116,14 +141,20 @@ impl GoalSnapshot {
                     let mut line = vec![TerminalSpan {
                         text: format!("{names} : "),
                         style: TerminalStyle::Plain,
+                        tags: Vec::new(),
                     }];
                     if let Some(value) = hyp_object.get("type") {
                         if let Ok(tagged) = serde_json::from_value::<TaggedText>(value.clone()) {
                             line.extend(terminal_spans(&tagged));
-                        } else if let Some(text) = value.as_str() {
+                        } else {
+                            let text = value
+                                .as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| value.to_string());
                             line.push(TerminalSpan {
-                                text: text.to_owned(),
+                                text,
                                 style: TerminalStyle::Plain,
+                                tags: Vec::new(),
                             });
                         }
                     }
@@ -200,6 +231,7 @@ impl GoalSnapshot {
                         vec![TerminalSpan {
                             text,
                             style: TerminalStyle::Plain,
+                            tags: Vec::new(),
                         }]
                     })
                     .collect()
@@ -416,5 +448,24 @@ mod tests {
         assert!(lines[0]
             .iter()
             .any(|span| span.style == TerminalStyle::Type));
+    }
+
+    #[test]
+    fn malformed_interactive_items_leave_other_goals_renderable() {
+        let stamp = RequestStamp {
+            uri: "file:///Main.lean".into(),
+            version: 1,
+            position: position(),
+            generation: 1,
+        };
+        let value = json!({"goals":[
+            7,
+            {"goalPrefix":"⊢ ","hyps":[null],"type":{"tag":["bad"]}}
+        ]});
+        let snapshot = GoalSnapshot::from_interactive_goals(stamp, &value).unwrap();
+        assert_eq!(snapshot.goals.len(), 2);
+        assert!(snapshot.goals[0].contains("malformed interactive goal"));
+        assert!(snapshot.goals[1].contains("malformed hypothesis"));
+        assert!(snapshot.goals[1].contains("bad"));
     }
 }

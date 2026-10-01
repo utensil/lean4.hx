@@ -24,6 +24,8 @@ pub enum TerminalStyle {
 pub struct TerminalSpan {
     pub text: String,
     pub style: TerminalStyle,
+    /// Opaque Lean `SubexprInfo` tags retained for a later source action.
+    pub tags: Vec<Value>,
 }
 
 /// Wrap by terminal cells, preserving grapheme clusters and style boundaries.
@@ -55,7 +57,17 @@ pub fn layout_lines(lines: &[Vec<TerminalSpan>], width: usize) -> Vec<Vec<Value>
                     out.push(std::mem::take(&mut row));
                     column = 0;
                 }
-                if cells <= width {
+                if cells > width {
+                    // A single wide grapheme must remain visible even in a
+                    // narrow panel. The terminal clips it at the edge; dropping
+                    // it would silently lose source text.
+                    if !row.is_empty() {
+                        out.push(std::mem::take(&mut row));
+                    }
+                    row.push(serde_json::json!({"column":0,"text":text,"style":style}));
+                    out.push(std::mem::take(&mut row));
+                    column = 0;
+                } else {
                     row.push(serde_json::json!({"column":column,"text":text,"style":style}));
                     column += cells;
                 }
@@ -95,7 +107,7 @@ pub fn terminal_spans(value: &TaggedText) -> Vec<TerminalSpan> {
     for span in flatten_tagged_text(value) {
         let style = style_for_tags(&span.tags);
         if let Some(previous) = out.last_mut() {
-            if previous.style == style {
+            if previous.style == style && previous.tags == span.tags {
                 previous.text.push_str(&span.text);
                 continue;
             }
@@ -103,6 +115,7 @@ pub fn terminal_spans(value: &TaggedText) -> Vec<TerminalSpan> {
         out.push(TerminalSpan {
             text: span.text,
             style,
+            tags: span.tags,
         });
     }
     out
@@ -234,6 +247,19 @@ mod tests {
         assert_eq!(spans[0].text, "⊢ Nat");
         assert_eq!(spans[1].style, TerminalStyle::Plain);
         assert!(spans[1].text.contains("future"));
+    }
+
+    #[test]
+    fn terminal_layout_keeps_a_wide_grapheme_in_a_narrow_panel() {
+        let lines = vec![vec![TerminalSpan {
+            text: "界".into(),
+            style: TerminalStyle::Type,
+            tags: vec![serde_json::json!({"info": {"__rpcref": 1}})],
+        }]];
+        let rendered = layout_lines(&lines, 1);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0][0]["text"], "界");
+        assert_eq!(lines[0][0].tags[0]["info"]["__rpcref"], 1);
     }
 
     #[test]
