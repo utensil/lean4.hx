@@ -21,7 +21,6 @@ use steel::{
 };
 
 use crate::{
-    actions::{validate_text_edit, TextEdit},
     correspondence::{first_location, same_document},
     goals::GoalState,
     protocol::{Extras, PlainGoal, Position},
@@ -47,6 +46,8 @@ struct NativeState {
     generation: AtomicUsize,
     document_version: AtomicUsize,
     request_inflight: AtomicBool,
+    focused: AtomicBool,
+    scroll: AtomicUsize,
     last_request: Mutex<String>,
     last_callback: Mutex<String>,
     goal: Mutex<String>,
@@ -73,6 +74,8 @@ impl NativeState {
             generation: AtomicUsize::new(0),
             document_version: AtomicUsize::new(1),
             request_inflight: AtomicBool::new(false),
+            focused: AtomicBool::new(false),
+            scroll: AtomicUsize::new(0),
             last_request: Mutex::new("none".to_owned()),
             last_callback: Mutex::new("none".to_owned()),
             goal: Mutex::new("Lean goal unavailable".to_owned()),
@@ -92,6 +95,8 @@ impl NativeState {
         self.active.store(false, Ordering::Release);
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
+        self.focused.store(false, Ordering::Release);
+        self.scroll.store(0, Ordering::Release);
         self.goal_state.lock().expect("goal state poisoned").close();
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         *self.navigation.lock().expect("navigation state poisoned") =
@@ -113,41 +118,30 @@ impl NativeState {
 
     fn record_insert(&self) {
         if self.is_active() {
-            if let Some(snapshot) = self
-                .goal_state
-                .lock()
-                .expect("goal state poisoned")
-                .snapshot()
-                .cloned()
-            {
-                let edit = TextEdit {
-                    uri: snapshot.stamp.uri.clone(),
-                    version: snapshot.stamp.version,
-                    range: crate::protocol::Range {
-                        start: snapshot.stamp.position.clone(),
-                        end: snapshot.stamp.position.clone(),
-                        extra: Extras::new(),
-                    },
-                    new_text: String::new(),
-                    generation: snapshot.stamp.generation,
-                };
-                if validate_text_edit(&edit, &snapshot.stamp).is_ok() {
-                    eprintln!("LEAN4_HX_EDIT_APPLIED");
-                }
-            }
-            self.generation.fetch_add(1, Ordering::AcqRel);
-            self.document_version.fetch_add(1, Ordering::AcqRel);
-            self.request_inflight.store(false, Ordering::Release);
-            self.goal_state
-                .lock()
-                .expect("goal state poisoned")
-                .invalidate("document changed");
-            *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
-            *self.navigation.lock().expect("navigation state poisoned") =
-                "Navigation unavailable".to_owned();
-            self.inserts.fetch_add(1, Ordering::Relaxed);
-            eprintln!("LEAN4_HX_INSERT");
+            self.record_document_change();
         }
+    }
+
+    fn record_document_change(&self) {
+        if !self.is_active() {
+            return;
+        }
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.document_version.fetch_add(1, Ordering::AcqRel);
+        self.request_inflight.store(false, Ordering::Release);
+        self.scroll.store(0, Ordering::Release);
+        self.goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .invalidate_and_advance("document changed");
+        *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
+        *self.navigation.lock().expect("navigation state poisoned") =
+            "Navigation unavailable".to_owned();
+        self.inserts.fetch_add(1, Ordering::Relaxed);
+        eprintln!(
+            "LEAN4_HX_DOCUMENT_CHANGED version={}",
+            self.document_version.load(Ordering::Acquire)
+        );
     }
 
     fn record_opened(&self) {
@@ -155,6 +149,7 @@ impl NativeState {
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.document_version.store(1, Ordering::Release);
             self.request_inflight.store(false, Ordering::Release);
+            self.scroll.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             *self.navigation.lock().expect("navigation state poisoned") =
@@ -168,6 +163,8 @@ impl NativeState {
         if self.is_active() {
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.request_inflight.store(false, Ordering::Release);
+            self.focused.store(false, Ordering::Release);
+            self.scroll.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             *self.navigation.lock().expect("navigation state poisoned") =
@@ -206,10 +203,11 @@ impl NativeState {
     fn cancel_request(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
+        self.scroll.store(0, Ordering::Release);
         self.goal_state
             .lock()
             .expect("goal state poisoned")
-            .invalidate("selection changed");
+            .invalidate_and_advance("selection changed");
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
     }
@@ -258,10 +256,19 @@ impl NativeState {
                     .display_text()
             };
             self.request_inflight.store(false, Ordering::Release);
+            self.scroll.store(0, Ordering::Release);
             *self.goal.lock().expect("goal state poisoned") = goal.clone();
             eprintln!("LEAN4_HX_CALLBACK result=reply");
             eprintln!("LEAN4_HX_GOAL generation={generation} text={goal}");
             if goal != "Lean goal unavailable" && !goal.is_empty() {
+                let lines = self
+                    .goal_state
+                    .lock()
+                    .expect("goal state poisoned")
+                    .snapshot()
+                    .map(|snapshot| snapshot.display_lines().len())
+                    .unwrap_or(0);
+                eprintln!("LEAN4_HX_GOAL_RENDER_READY lines={lines} available=true");
                 eprintln!("LEAN4_HX_GOAL_AVAILABLE");
             }
         } else {
@@ -327,6 +334,41 @@ impl NativeState {
             .clone();
         eprintln!("LEAN4_HX_RENDER {goal}");
         format!("lean4.hx goal {renders}: {goal} [{navigation}]")
+    }
+
+    fn lines(&self) -> Vec<String> {
+        let mut lines = vec![if self.focused() {
+            "Lean goals [focused]".to_owned()
+        } else {
+            "Lean goals [source]".to_owned()
+        }];
+        let body = self
+            .goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .snapshot()
+            .map(|snapshot| snapshot.display_lines())
+            .unwrap_or_else(|| vec!["Lean goal unavailable".to_owned()]);
+        let offset = self.scroll.load(Ordering::Acquire);
+        lines.extend(body.into_iter().skip(offset));
+        lines
+    }
+
+    fn focused(&self) -> bool {
+        self.focused.load(Ordering::Acquire)
+    }
+
+    fn set_focused(&self, focused: bool) {
+        self.focused.store(focused, Ordering::Release);
+        eprintln!("LEAN4_HX_GOAL_FOCUS focused={focused}");
+    }
+
+    fn scroll(&self, amount: isize) {
+        let current = self.scroll.load(Ordering::Acquire) as isize;
+        self.scroll.store(
+            current.saturating_add(amount).max(0) as usize,
+            Ordering::Release,
+        );
     }
 
     fn summary(&self) -> String {
@@ -395,6 +437,10 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-active?", NativeState::is_active)
         .register_fn("native-record-selection!", NativeState::record_selection)
         .register_fn("native-record-insert!", NativeState::record_insert)
+        .register_fn(
+            "native-record-document-change!",
+            NativeState::record_document_change,
+        )
         .register_fn("native-record-open!", NativeState::record_opened)
         .register_fn("native-record-close!", NativeState::record_closed)
         .register_fn("native-record-request!", NativeState::record_request)
@@ -404,6 +450,9 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-record-navigation!", NativeState::record_navigation)
         .register_fn("native-record-rpc!", NativeState::record_rpc)
         .register_fn("native-label", NativeState::label)
+        .register_fn("native-lines", NativeState::lines)
+        .register_fn("native-set-focused!", NativeState::set_focused)
+        .register_fn("native-scroll!", NativeState::scroll)
         .register_fn("native-summary", NativeState::summary)
         .register_fn("native-file-uri", file_uri);
     module
@@ -431,5 +480,24 @@ mod tests {
             *state.goal.lock().expect("goal state poisoned"),
             "Lean goal unavailable"
         );
+    }
+
+    #[test]
+    fn document_change_invalidates_callback_and_advances_version() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        assert_ne!(generation, 0);
+        state.record_document_change();
+        state.record_callback(
+            generation,
+            r#"{"goals":["stale"],"rendered":"stale"}"#.into(),
+        );
+        assert_eq!(
+            *state.goal.lock().expect("goal state poisoned"),
+            "Lean goal unavailable"
+        );
+        let reopened = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        assert!(reopened > generation);
     }
 }
