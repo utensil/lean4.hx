@@ -53,10 +53,6 @@ pub fn layout_lines(lines: &[Vec<TerminalSpan>], width: usize) -> Vec<Vec<Value>
                 }
                 let text = if cluster == "\t" { "    " } else { cluster };
                 let cells = UnicodeWidthStr::width(text);
-                if column + cells > width {
-                    out.push(std::mem::take(&mut row));
-                    column = 0;
-                }
                 if cells > width {
                     // A single wide grapheme must remain visible even in a
                     // narrow panel. The terminal clips it at the edge; dropping
@@ -68,12 +64,18 @@ pub fn layout_lines(lines: &[Vec<TerminalSpan>], width: usize) -> Vec<Vec<Value>
                     out.push(std::mem::take(&mut row));
                     column = 0;
                 } else {
+                    if column + cells > width {
+                        out.push(std::mem::take(&mut row));
+                        column = 0;
+                    }
                     row.push(serde_json::json!({"column":column,"text":text,"style":style}));
                     column += cells;
                 }
             }
         }
-        out.push(row);
+        if !row.is_empty() {
+            out.push(row);
+        }
     }
     out
 }
