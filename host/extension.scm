@@ -3,6 +3,7 @@
 (require-builtin helix/core/editor as editor.)
 (require-builtin helix/core/misc as hx.)
 (require-builtin helix/core/static as static.)
+(require-builtin helix/core/typable as command.)
 (require-builtin helix/core/text as text.)
 (require-builtin helix/components as components.)
 (#%require-dylib "liblean4_hx"
@@ -11,10 +12,10 @@
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
            native-record-rpc! native-label native-lines native-summary native-file-uri
-           native-set-focused! native-scroll! native-next-goal! native-previous-goal!
+           native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
-           native-navigation-uri native-navigation-start-line
+           native-navigation-target native-navigation-path native-navigation-uri native-navigation-start-line
            native-navigation-start-character native-navigation-end-line
            native-navigation-end-character))
 
@@ -158,30 +159,37 @@
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
 
 (define (lean4-hx-apply-navigation!)
-  (let ([path (static.cx->current-file)]
-        [uri (native-navigation-uri lean4-hx-native)])
-    (if (and path (not (string=? uri "")))
-        (if (string=? uri (native-file-uri path))
-            (let* ([view (editor.editor-focus)]
-                   [document (editor.editor->doc-id view)]
-                   [rope (editor.editor->text document)]
-                   [start-line (native-navigation-start-line lean4-hx-native)]
-                   [end-line (native-navigation-end-line lean4-hx-native)]
-                   [start-text (text.rope->string (text.rope->line rope start-line))]
-                   [end-text (text.rope->string (text.rope->line rope end-line))]
-                   [start-column (native-utf16-to-chars
-                                 lean4-hx-native start-text
-                                 (native-navigation-start-character lean4-hx-native))]
-                   [end-column (native-utf16-to-chars
-                               lean4-hx-native end-text
-                               (native-navigation-end-character lean4-hx-native))]
-                   [start (+ (text.rope-line->char rope start-line) start-column)]
-                   [end (+ (text.rope-line->char rope end-line) end-column)])
-              (static.set-current-selection-object!
-               (static.range->selection (static.range start end)))
-              (lean4-hx-status "lean4.hx navigated"))
-            (hx.set-warning! "lean4.hx: cross-file navigation needs host open support"))
-        (hx.set-warning! "lean4.hx: navigation unavailable"))))
+  ;; Capture the whole target before opening: open/selection hooks invalidate it.
+  (let* ([target-json (native-navigation-target lean4-hx-native)]
+         [target (string->jsexpr target-json)])
+    (if (not (hash-contains? target "path"))
+        (hx.set-warning! "lean4.hx: navigation unavailable")
+        (let ([path (hash-ref target "path")]
+              [start-line (hash-ref target "start-line")]
+              [end-line (hash-ref target "end-line")]
+              [start-character (hash-ref target "start-character")]
+              [end-character (hash-ref target "end-character")])
+        (begin
+          (command.open path)
+          (let* ([view (editor.editor-focus)]
+                 [document (editor.editor->doc-id view)]
+                 [rope (editor.editor->text document)]
+                 [start-rope (and (< start-line (text.rope-len-lines rope))
+                                  (text.rope->line rope start-line))]
+                 [end-rope (and (< end-line (text.rope-len-lines rope))
+                                (text.rope->line rope end-line))])
+            (if (and start-rope end-rope)
+                (let* ([start-text (text.rope->string start-rope)]
+                       [end-text (text.rope->string end-rope)]
+                       [start (+ (text.rope-line->char rope start-line)
+                                 (native-utf16-to-chars lean4-hx-native start-text start-character))]
+                       [end (+ (text.rope-line->char rope end-line)
+                               (native-utf16-to-chars lean4-hx-native end-text end-character))])
+                  (static.set-current-selection-object!
+                   (static.range->selection (static.range start end)))
+                  (native-set-focused! lean4-hx-native #f)
+                  (hx.set-status! "lean4.hx: navigated"))
+                (hx.set-warning! "lean4.hx: navigation target range unavailable"))))))))
 
 (define (lean4-hx-render state area frame)
   (let ([row (components.area-y area)]
@@ -206,6 +214,7 @@
     (native-set-focused! state #f)
     ;; Let Helix also process Escape so insert mode returns to normal mode.
     components.event-result/ignore]
+   [(not (native-focused? state)) components.event-result/ignore]
    [(components.key-event-page-down? event)
     (native-scroll! state 1)
     components.event-result/consume]

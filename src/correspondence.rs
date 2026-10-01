@@ -52,7 +52,10 @@ pub fn terminal_spans(value: &TaggedText) -> Vec<TerminalSpan> {
                 continue;
             }
         }
-        out.push(TerminalSpan { text: span.text, style });
+        out.push(TerminalSpan {
+            text: span.text,
+            style,
+        });
     }
     out
 }
