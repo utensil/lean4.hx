@@ -3,6 +3,7 @@
 (require-builtin helix/core/editor as editor.)
 (require-builtin helix/core/misc as hx.)
 (require-builtin helix/core/static as static.)
+(require-builtin helix/core/text as text.)
 (require-builtin helix/components as components.)
 (#%require-dylib "liblean4_hx"
   (only-in native-state native-activate! native-deactivate! native-active?
@@ -10,7 +11,8 @@
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
            native-record-rpc! native-label native-lines native-summary native-file-uri
-           native-set-focused! native-scroll!))
+           native-set-focused! native-scroll! native-unicode-start native-unicode-end
+           native-unicode-replacement))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -23,6 +25,28 @@
 (define lean4-hx-component #f)
 (define lean4-hx-installed? #f)
 (define lean4-hx-selection-pending? #f)
+
+(define (lean4-hx-expand-unicode!)
+  (let ([path (static.cx->current-file)])
+    (if path
+        (let* ([view (editor.editor-focus)]
+               [document (editor.editor->doc-id view)]
+               [rope (editor.editor->text document)]
+               [line-number (static.get-current-line-number)]
+               [line (text.rope->string (text.rope->line rope line-number))]
+               [cursor (static.get-current-line-character "utf-16")]
+               [start (native-unicode-start lean4-hx-native line cursor)]
+               [end (native-unicode-end lean4-hx-native line cursor)]
+               [replacement (native-unicode-replacement lean4-hx-native line cursor)])
+          (if (and (> end start) (not (string=? replacement "")))
+              (let ([line-start (text.rope-line->char rope line-number)])
+                (static.set-current-selection-object!
+                 (static.range->selection
+                  (static.range (+ line-start start) (+ line-start end))))
+                (static.replace-selection-with replacement)
+                (lean4-hx-status "lean4.hx unicode"))
+              #f))
+        #f)))
 
 (define (lean4-hx-summary)
   (native-summary lean4-hx-native))
@@ -54,6 +78,11 @@
 
 (define (lean4-hx-on-document-change document old-text)
   (native-record-document-change! lean4-hx-native))
+
+(define (lean4-hx-on-insert-char char)
+  (if (equal? char #\space)
+      (lean4-hx-expand-unicode!)
+      #f))
 
 (define (lean4-hx-on-open document)
   (native-record-open! lean4-hx-native))
@@ -149,6 +178,7 @@
         (set! lean4-hx-selection-pending? #f)
         (native-activate! lean4-hx-native)
         (editor.register-hook 'selection-did-change lean4-hx-on-selection)
+        (editor.register-hook 'post-insert-char lean4-hx-on-insert-char)
         (editor.register-hook 'document-changed lean4-hx-on-document-change)
         (editor.register-hook 'document-opened lean4-hx-on-open)
         (editor.register-hook 'document-closed lean4-hx-on-close)

@@ -30,6 +30,7 @@ pub mod actions;
 pub mod correspondence;
 pub mod goals;
 pub mod protocol;
+pub mod unicode;
 
 #[derive(Debug)]
 struct NativeState {
@@ -390,6 +391,24 @@ impl NativeState {
             &*callback,
         )
     }
+
+    fn unicode_start(&self, line: String, cursor_utf16: usize) -> usize {
+        unicode::edit_at_cursor(&line, cursor_utf16)
+            .map(|edit| edit.start_chars)
+            .unwrap_or(0)
+    }
+
+    fn unicode_end(&self, line: String, cursor_utf16: usize) -> usize {
+        unicode::edit_at_cursor(&line, cursor_utf16)
+            .map(|edit| edit.end_chars)
+            .unwrap_or(0)
+    }
+
+    fn unicode_replacement(&self, line: String, cursor_utf16: usize) -> String {
+        unicode::edit_at_cursor(&line, cursor_utf16)
+            .map(|edit| edit.replacement.to_owned())
+            .unwrap_or_default()
+    }
 }
 
 /// Convert an absolute editor path into the URI required by Lean's LSP.
@@ -454,6 +473,12 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-set-focused!", NativeState::set_focused)
         .register_fn("native-scroll!", NativeState::scroll)
         .register_fn("native-summary", NativeState::summary)
+        .register_fn("native-unicode-start", NativeState::unicode_start)
+        .register_fn("native-unicode-end", NativeState::unicode_end)
+        .register_fn(
+            "native-unicode-replacement",
+            NativeState::unicode_replacement,
+        )
         .register_fn("native-file-uri", file_uri);
     module
 }
