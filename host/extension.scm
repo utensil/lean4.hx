@@ -11,7 +11,8 @@
            native-record-selection! native-record-document-change! native-record-open!
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
-           native-generation-current? native-rpc-goals-request native-record-rpc! native-label native-lines native-styled-lines native-summary native-file-uri
+           native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
+           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-lines native-styled-lines native-summary native-file-uri
            native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
@@ -109,7 +110,31 @@
   (native-record-open! lean4-hx-native)
   (lean4-hx-schedule-refresh!))
 
+(define (lean4-hx-rpc-keepalive!)
+  (let ([request (string->jsexpr (native-rpc-keepalive-request lean4-hx-native))])
+    (if (hash-contains? request 'sessionId)
+        (begin
+          (hx.send-lsp-notification "lean" "$/lean/rpc/keepAlive" request)
+          (hx.set-status! "lean4.hx RPC keep-alive")
+          #t)
+        #f)))
+
+(define (lean4-hx-rpc-release!)
+  (let ([request (string->jsexpr (native-rpc-release-request lean4-hx-native))])
+    (if (hash-contains? request 'sessionId)
+        (begin
+          ;; Teardown must not block a document-close hook when the language
+          ;; server is being restarted or has already exited.
+          (hx.enqueue-thread-local-callback-with-delay
+           0
+           (lambda ()
+             (hx.send-lsp-notification "lean" "$/lean/rpc/release" request)))
+          (hx.set-status! "lean4.hx RPC released")
+          #t)
+        #f)))
+
 (define (lean4-hx-on-close closed-event)
+  (lean4-hx-rpc-release!)
   (native-record-close! lean4-hx-native))
 
 (define (lean4-hx-on-lean-info generation result)
@@ -131,6 +156,7 @@
       (begin
         (native-record-rpc! lean4-hx-native generation
                             (value->jsexpr-string result))
+        (lean4-hx-rpc-keepalive!)
         (let ([request (string->jsexpr
                         (native-rpc-goals-request lean4-hx-native generation
                                                   (value->jsexpr-string result)))])
@@ -152,13 +178,14 @@
                  0
                  (lambda ()
                    (if (native-generation-current? lean4-hx-native generation)
-                       (hx.send-lsp-command "lean" "$/lean/rpc/call" request
-                                            (lambda (reply)
-                                              (native-record-rpc! lean4-hx-native generation
-                                                                  (value->jsexpr-string reply))))
-                       #f)))
+                       (hx.send-lsp-command
+                        "lean" "$/lean/rpc/call" request
+                        (lambda (reply)
+                          (native-record-rpc! lean4-hx-native generation
+                                               (value->jsexpr-string reply))))
+                       #f))))
               #f)))
-      #f)))
+      #f))
 
 (define (lean4-hx-request-lean-info!)
   (let ([path (static.cx->current-file)])
@@ -179,10 +206,34 @@
                   (hx.send-lsp-command "lean" "textDocument/definition" params
                                        (lambda (result)
                                          (lean4-hx-on-definition generation result)))
-                  (hx.send-lsp-command "lean" "$/lean/rpc/connect"
-                                       (hash "uri" uri)
-                                       (lambda (result)
-                                         (lean4-hx-on-rpc generation result))))
+                  (if (native-rpc-session-current? lean4-hx-native generation)
+                      (let ([request
+                             (string->jsexpr
+                              (native-rpc-session-goals-request
+                               lean4-hx-native generation))])
+                        (if (hash-contains? request 'sessionId)
+                            (let* ([position (hash-ref request 'position)]
+                                   [line (exact (hash-ref position 'line))]
+                                   [character (exact (hash-ref position 'character))]
+                                   [position (hash-insert
+                                              (hash-insert position 'line line)
+                                              'character character)]
+                                   [params (hash-ref request 'params)]
+                                   [params (hash-insert
+                                            (hash-insert params 'position position)
+                                            'textDocument (hash-ref request 'textDocument))]
+                                   [request (hash-insert
+                                             (hash-insert request 'position position)
+                                             'params params)])
+                              (hx.send-lsp-command
+                               "lean" "$/lean/rpc/call" request
+                               (lambda (result)
+                                 (lean4-hx-on-rpc generation result))))
+                            #f))
+                      (hx.send-lsp-command "lean" "$/lean/rpc/connect"
+                                           (hash "uri" uri)
+                                           (lambda (result)
+                                             (lean4-hx-on-rpc generation result)))))
                 #f))
           (lean4-hx-status "lean4.hx Lean request"))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
@@ -322,6 +373,7 @@
         "lean4.hx installed")))
 
 (define (lean4-hx-remove-component!)
+  (lean4-hx-rpc-release!)
   (if lean4-hx-component
       (begin
         (hx.pop-last-component-by-name! "lean4-hx-component")
