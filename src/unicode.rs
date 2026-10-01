@@ -17,6 +17,18 @@ pub struct UnicodeEdit {
     pub cursor_chars: usize,
 }
 
+/// Convert a valid UTF-16 column into a Helix character column.
+pub fn utf16_to_chars(line: &str, cursor_utf16: usize) -> Option<usize> {
+    let mut utf16 = 0usize;
+    for (chars, ch) in line.chars().enumerate() {
+        if utf16 == cursor_utf16 {
+            return Some(chars);
+        }
+        utf16 += ch.len_utf16();
+    }
+    (utf16 == cursor_utf16).then_some(line.chars().count())
+}
+
 fn abbreviations() -> &'static BTreeMap<String, String> {
     static TABLE: OnceLock<BTreeMap<String, String>> = OnceLock::new();
     TABLE.get_or_init(|| {

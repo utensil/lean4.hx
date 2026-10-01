@@ -9,6 +9,54 @@ pub struct StyledSpan {
     pub tags: Vec<Value>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TerminalStyle {
+    Plain,
+    Keyword,
+    Type,
+    Goal,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalSpan {
+    pub text: String,
+    pub style: TerminalStyle,
+}
+
+fn style_for_tags(tags: &[Value]) -> TerminalStyle {
+    for tag in tags.iter().rev() {
+        let Some(kind) = tag.get("kind").and_then(Value::as_str) else {
+            continue;
+        };
+        match kind {
+            "keyword" | "tactic" => return TerminalStyle::Keyword,
+            "type" | "typename" => return TerminalStyle::Type,
+            "goal" | "target" => return TerminalStyle::Goal,
+            "error" => return TerminalStyle::Error,
+            _ => {}
+        }
+    }
+    TerminalStyle::Plain
+}
+
+/// Convert Lean tagged text into terminal spans, retaining unknown text while
+/// collapsing adjacent fragments that have the same terminal style.
+pub fn terminal_spans(value: &TaggedText) -> Vec<TerminalSpan> {
+    let mut out: Vec<TerminalSpan> = Vec::new();
+    for span in flatten_tagged_text(value) {
+        let style = style_for_tags(&span.tags);
+        if let Some(previous) = out.last_mut() {
+            if previous.style == style {
+                previous.text.push_str(&span.text);
+                continue;
+            }
+        }
+        out.push(TerminalSpan { text: span.text, style });
+    }
+    out
+}
+
 pub fn flatten_tagged_text(value: &TaggedText) -> Vec<StyledSpan> {
     fn walk(value: &TaggedText, tags: &mut Vec<Value>, out: &mut Vec<StyledSpan>) {
         match value {
@@ -115,6 +163,26 @@ mod tests {
         assert_eq!(spans[0].text, "⊢ ");
         assert_eq!(spans[1].tags.len(), 2);
         assert_eq!(spans[1].text, "Nat");
+    }
+
+    #[test]
+    fn terminal_spans_preserve_unknown_text_and_merge_styles() {
+        let value = TaggedText::Append(vec![
+            TaggedText::Tag {
+                tag: serde_json::json!({"kind": "goal"}),
+                value: Box::new(TaggedText::Text("⊢ ".into())),
+            },
+            TaggedText::Tag {
+                tag: serde_json::json!({"kind": "goal"}),
+                value: Box::new(TaggedText::Text("Nat".into())),
+            },
+            TaggedText::Unknown(serde_json::json!({"future": true})),
+        ]);
+        let spans = terminal_spans(&value);
+        assert_eq!(spans[0].style, TerminalStyle::Goal);
+        assert_eq!(spans[0].text, "⊢ Nat");
+        assert_eq!(spans[1].style, TerminalStyle::Plain);
+        assert!(spans[1].text.contains("future"));
     }
 
     #[test]
