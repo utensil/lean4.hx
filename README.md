@@ -22,10 +22,22 @@ cargo test --locked
 ./scripts/host-harness.sh
 ```
 
-The host extension is in `host/extension.scm`. Build the native library with
-`cargo build --release`, install the resulting library under
-`$STEEL_HOME/native`, load the Scheme file from a Helix `init.scm`, and call
-`(lean4-hx-install!)`. The extension exposes one Lean goal request, editor
-selection and character hooks, and a small native component for host testing.
+Install the native library and Steel module with:
+
+```sh
+STEEL_HOME=/path/to/steel ./scripts/install.sh
+```
+
+Load the module from the Steel-enabled Helix `init.scm`:
+
+```scheme
+(require "lean4-hx.scm")
+(lean4-hx-install!)
+```
+
+The goal component follows the source cursor. Press `tab` to focus it, `pageup`
+or `pagedown` to scroll, and `escape` to return focus to the source buffer.
+Removing the component with `(lean4-hx-remove-component!)` cancels pending goal
+requests and clears the displayed snapshot.
 
 The project is distributed under the [MIT License](LICENSE).
