@@ -119,7 +119,7 @@ send " "
 send "\\033"
 need "LEAN4_HX_DOCUMENT_CHANGED version="
 sleep 2
-need "LEAN4_HX_GOAL_AVAILABLE"
+need "LEAN4_HX_CALLBACK result=reply"
 send ":lsp-restart"
 send "\\r"
 sleep 5
