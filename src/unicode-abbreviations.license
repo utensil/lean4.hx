@@ -1,0 +1,11 @@
+The vendored `unicode-abbreviations.json` snapshot is derived from:
+
+https://github.com/leanprover-community/vscode-lean4/blob/dead846a035f42dc13beb7619ac779538e6ddf6e/lean4-unicode-input/src/abbreviations.json
+
+Upstream revision: dead846a035f42dc13beb7619ac779538e6ddf6e
+Snapshot SHA-256: fa5e317d4d481c8bf12d6438e489376931c18438dd0a68af3683a4cb9e92b5b0
+
+The upstream repository is distributed under the Apache License, Version 2.0.
+Its license text is available at:
+
+https://github.com/leanprover-community/vscode-lean4/blob/dead846a035f42dc13beb7619ac779538e6ddf6e/LICENSE

@@ -4,6 +4,12 @@
 //! implement a small, divergent subset of Lean input. Templates use the
 //! `$CURSOR` marker for paired delimiters and other insertions that leave the
 //! cursor inside the replacement.
+//!
+//! `unicode-abbreviations.json` is vendored from the public Lean VS Code
+//! abbreviation corpus at revision `dead846a035f42dc13beb7619ac779538e6ddf6e`.
+//! See `src/unicode-abbreviations.license` and
+//! `scripts/sync-unicode-abbreviations.sh` for attribution and reproducible
+//! refresh instructions.
 
 use serde::de::{MapAccess, Visitor};
 use std::{collections::BTreeMap, fmt, sync::OnceLock};
