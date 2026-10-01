@@ -127,6 +127,13 @@ class Client:
             self.close()
 
 
+def optional_request(client: Client, method: str, params: dict[str, Any]) -> tuple[Any, str | None]:
+    try:
+        return client.request(method, params), None
+    except LspError as exc:
+        return None, str(exc)
+
+
 def file_uri(path: pathlib.Path) -> str:
     return urllib.parse.urlunparse(("file", "", str(path), "", "", ""))
 
@@ -194,6 +201,7 @@ def main() -> int:
                 "serverInfo": init.get("serverInfo"),
                 "capabilities": sorted(k for k, v in init.get("capabilities", {}).items() if v),
             }
+            capabilities = init.get("capabilities", {})
             helper_uri = file_uri(helper_path)
             c.notify("textDocument/didOpen", {"textDocument": {"uri": helper_uri, "languageId": "lean", "version": 1, "text": helper_source}})
             c.request("textDocument/waitForDiagnostics", {"uri": helper_uri, "version": 1}, timeout=30)
@@ -230,6 +238,22 @@ def main() -> int:
             baseline["hover"] = c.request("textDocument/hover", {**text_document, "position": pos(2, 4)})
             baseline["completion"] = c.request("textDocument/completion", {**text_document, "position": pos(2, 6)})
             baseline["definition"] = c.request("textDocument/definition", {**text_document, "position": pos(2, 4)})
+            baseline["signatureHelp"] = c.request("textDocument/signatureHelp", {**text_document, "position": pos(3, 31)})
+            baseline["documentSymbol"] = c.request("textDocument/documentSymbol", text_document)
+            formatting, formatting_error = optional_request(
+                c,
+                "textDocument/formatting",
+                {**text_document, "options": {"tabSize": 2, "insertSpaces": True}},
+            ) if capabilities.get("documentFormattingProvider") else (None, "server did not advertise formatting")
+            rename, rename_error = optional_request(
+                c,
+                "textDocument/rename",
+                {**text_document, "position": pos(3, 17), "newName": "identityRenamed"},
+            )
+            baseline["formatting"] = formatting
+            baseline["formattingError"] = formatting_error
+            baseline["rename"] = rename
+            baseline["renameError"] = rename_error
             # `Nat` resolves into Lean's imported Prelude source, providing a
             # real cross-file location fixture.
             baseline["crossFileDefinition"] = c.request("textDocument/definition", {**text_document, "position": pos(2, 13)})
@@ -241,6 +265,14 @@ def main() -> int:
                 "completion": isinstance(baseline["completion"], dict),
                 "completionItems": len(baseline["completion"].get("items", [])) if isinstance(baseline["completion"], dict) else 0,
                 "definition": isinstance(baseline["definition"], list),
+                "signatureHelp": baseline["signatureHelp"] is None or isinstance(baseline["signatureHelp"], dict),
+                "signatureHelpPresent": isinstance(baseline["signatureHelp"], dict),
+                "documentSymbol": isinstance(baseline["documentSymbol"], list),
+                "formatting": isinstance(baseline["formatting"], list) if capabilities.get("documentFormattingProvider") else None,
+                "formattingAdvertised": bool(capabilities.get("documentFormattingProvider")),
+                "formattingError": baseline["formattingError"],
+                "rename": isinstance(baseline["rename"], dict),
+                "renameError": baseline["renameError"],
                 "definitionCrossFile": any(
                     isinstance(item, dict)
                     and item.get("targetUri", item.get("uri", "")) != str(uri)
@@ -261,11 +293,11 @@ def main() -> int:
                 "references": isinstance(baseline["references"], list),
                 "codeAction": isinstance(baseline["codeAction"], list),
                 "inlayHint": isinstance(baseline["inlayHint"], list),
-                "unsupported": [k for k, v in baseline.items() if v is None],
+                "unsupported": [k for k, v in baseline.items() if v is None and not k.endswith("Error")],
             }
             report["checks"]["ordinary_lsp_baseline"]["passed"] = all(
                 report["checks"]["ordinary_lsp_baseline"][key]
-                for key in ("hover", "completion", "definition", "definitionCrossFile", "references", "codeAction", "inlayHint")
+                for key in ("hover", "completion", "definition", "definitionCrossFile", "references", "codeAction", "inlayHint", "signatureHelp", "documentSymbol", "rename")
             )
             connect = c.request("$/lean/rpc/connect", {"uri": uri})
             session_id = connect.get("sessionId") if isinstance(connect, dict) else None
