@@ -95,6 +95,17 @@ send "j"
 sleep 2
 need "LEAN4_HX_GOAL_AVAILABLE"
 need "LEAN4_HX_TAGGED_RENDER_READY"
+send "j"
+send "j"
+sleep 2
+send ":lean4-hx-code-action!"
+send "\\r"
+need "Update #guard_msgs with generated message"
+send "\\r"
+sleep 2
+send ":write"
+send "\\r"
+sleep 1
 send "\\t"
 need "LEAN4_HX_GOAL_FOCUS focused=true"
 send "n"
@@ -177,6 +188,10 @@ if grep -E 'error\[E[0-9]+\]|BadSyntax|Sync job failed|panicked at|thread .* pan
     echo "PTY log contains a host failure; preserved evidence at $run_dir" >&2
     exit 1
 fi
+grep -F 'info: 42' "$project_dir/Main.lean" >/dev/null || {
+    echo "code action did not update the guard message; preserved evidence at $run_dir" >&2
+    exit 1
+}
 
 echo "host PTY acceptance passed"
 echo "Helix: $(git -C "$helix_dir" rev-parse HEAD)"

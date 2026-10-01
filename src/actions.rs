@@ -111,9 +111,7 @@ fn prepare_workspace_edit<'a>(
             let start = byte_offset(source, &edit.range.start)?;
             let end = byte_offset(source, &edit.range.end)?;
             if start > end {
-                return Err(ActionError::InvalidRange(
-                    "start follows end".into(),
-                ));
+                return Err(ActionError::InvalidRange("start follows end".into()));
             }
             Ok(PreparedTextEdit {
                 start,
@@ -128,9 +126,7 @@ fn prepare_workspace_edit<'a>(
         // A same-position pair is rejected even when one edit is an
         // insertion: LSP does not define an ordering for those replacements.
         if pair[1].start < pair[0].end || pair[1].start == pair[0].start {
-            return Err(ActionError::InvalidRange(
-                "workspace edits overlap".into(),
-            ));
+            return Err(ActionError::InvalidRange("workspace edits overlap".into()));
         }
     }
     Ok(prepared)
@@ -386,7 +382,7 @@ mod tests {
             Err(ActionError::InvalidRange("workspace edits overlap".into()))
         );
         assert_eq!(
-            apply_workspace_edit("abc", &[first, second], &current),
+            apply_workspace_edit("abc", &[first, second.clone()], &current),
             Err(ActionError::InvalidRange("workspace edits overlap".into()))
         );
 
@@ -446,14 +442,19 @@ mod tests {
             generation: current.generation,
         };
         let edits = [valid, invalid];
-        let expected = Err(ActionError::InvalidRange(
+        let expected_preflight = Err(ActionError::InvalidRange(
             "line is outside the document".into(),
         ));
         assert_eq!(
             preflight_workspace_edit("abc", &edits, &current),
-            expected.clone()
+            expected_preflight
         );
-        assert_eq!(apply_workspace_edit("abc", &edits, &current), expected);
+        assert_eq!(
+            apply_workspace_edit("abc", &edits, &current),
+            Err(ActionError::InvalidRange(
+                "line is outside the document".into()
+            ))
+        );
     }
 
     #[test]
