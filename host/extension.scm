@@ -191,7 +191,7 @@
 ;; picker.  The server resolves and applies the selected action through the
 ;; host's normal undo/history path.
 (define (lean4-hx-code-action!)
-  (command.code_action))
+  (static.code_action))
 
 (define (lean4-hx-apply-navigation!)
   ;; Capture the whole target before opening: open/selection hooks invalidate it.
