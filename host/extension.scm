@@ -11,8 +11,12 @@
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
            native-record-rpc! native-label native-lines native-summary native-file-uri
-           native-set-focused! native-scroll! native-unicode-start native-unicode-end
-           native-unicode-replacement native-unicode-cursor))
+           native-set-focused! native-scroll! native-next-goal! native-previous-goal!
+           native-unicode-start native-unicode-end
+           native-unicode-replacement native-unicode-cursor native-utf16-to-chars
+           native-navigation-uri native-navigation-start-line
+           native-navigation-start-character native-navigation-end-line
+           native-navigation-end-character))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -153,6 +157,32 @@
           (lean4-hx-status "lean4.hx Lean request"))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
 
+(define (lean4-hx-apply-navigation!)
+  (let ([path (static.cx->current-file)]
+        [uri (native-navigation-uri lean4-hx-native)])
+    (if (and path (not (string=? uri "")))
+        (if (string=? uri (native-file-uri path))
+            (let* ([view (editor.editor-focus)]
+                   [document (editor.editor->doc-id view)]
+                   [rope (editor.editor->text document)]
+                   [start-line (native-navigation-start-line lean4-hx-native)]
+                   [end-line (native-navigation-end-line lean4-hx-native)]
+                   [start-text (text.rope->string (text.rope->line rope start-line))]
+                   [end-text (text.rope->string (text.rope->line rope end-line))]
+                   [start-column (native-utf16-to-chars
+                                 lean4-hx-native start-text
+                                 (native-navigation-start-character lean4-hx-native))]
+                   [end-column (native-utf16-to-chars
+                               lean4-hx-native end-text
+                               (native-navigation-end-character lean4-hx-native))]
+                   [start (+ (text.rope-line->char rope start-line) start-column)]
+                   [end (+ (text.rope-line->char rope end-line) end-column)])
+              (static.set-current-selection-object!
+               (static.range->selection (static.range start end)))
+              (lean4-hx-status "lean4.hx navigated"))
+            (hx.set-warning! "lean4.hx: cross-file navigation needs host open support"))
+        (hx.set-warning! "lean4.hx: navigation unavailable"))))
+
 (define (lean4-hx-render state area frame)
   (let ([row (components.area-y area)]
         [last-row (+ (components.area-y area) (components.area-height area))])
@@ -181,6 +211,18 @@
     components.event-result/consume]
    [(components.key-event-page-up? event)
     (native-scroll! state -1)
+    components.event-result/consume]
+   [(and (components.key-event-char event)
+         (equal? (components.key-event-char event) #\g))
+    (lean4-hx-apply-navigation!)
+    components.event-result/consume]
+   [(and (components.key-event-char event)
+         (equal? (components.key-event-char event) #\n))
+    (native-next-goal! state)
+    components.event-result/consume]
+   [(and (components.key-event-char event)
+         (equal? (components.key-event-char event) #\p))
+    (native-previous-goal! state)
     components.event-result/consume]
    [else components.event-result/ignore]))
 

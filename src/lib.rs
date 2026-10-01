@@ -49,10 +49,12 @@ struct NativeState {
     request_inflight: AtomicBool,
     focused: AtomicBool,
     scroll: AtomicUsize,
+    selected_goal: AtomicUsize,
     last_request: Mutex<String>,
     last_callback: Mutex<String>,
     goal: Mutex<String>,
     navigation: Mutex<String>,
+    navigation_target: Mutex<Option<crate::protocol::Location>>,
     current_uri: Mutex<String>,
     goal_state: Mutex<GoalState>,
 }
@@ -77,10 +79,12 @@ impl NativeState {
             request_inflight: AtomicBool::new(false),
             focused: AtomicBool::new(false),
             scroll: AtomicUsize::new(0),
+            selected_goal: AtomicUsize::new(0),
             last_request: Mutex::new("none".to_owned()),
             last_callback: Mutex::new("none".to_owned()),
             goal: Mutex::new("Lean goal unavailable".to_owned()),
             navigation: Mutex::new("Navigation unavailable".to_owned()),
+            navigation_target: Mutex::new(None),
             current_uri: Mutex::new(String::new()),
             goal_state: Mutex::new(GoalState::default()),
         }
@@ -98,10 +102,12 @@ impl NativeState {
         self.request_inflight.store(false, Ordering::Release);
         self.focused.store(false, Ordering::Release);
         self.scroll.store(0, Ordering::Release);
+        self.selected_goal.store(0, Ordering::Release);
         self.goal_state.lock().expect("goal state poisoned").close();
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
+        *self.navigation_target.lock().expect("navigation state poisoned") = None;
         self.removals.fetch_add(1, Ordering::Relaxed);
         eprintln!("LEAN4_HX_REMOVE active=false");
     }
@@ -131,6 +137,7 @@ impl NativeState {
         self.document_version.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
         self.scroll.store(0, Ordering::Release);
+        self.selected_goal.store(0, Ordering::Release);
         self.goal_state
             .lock()
             .expect("goal state poisoned")
@@ -138,6 +145,7 @@ impl NativeState {
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
+        *self.navigation_target.lock().expect("navigation state poisoned") = None;
         self.inserts.fetch_add(1, Ordering::Relaxed);
         eprintln!(
             "LEAN4_HX_DOCUMENT_CHANGED version={}",
@@ -151,10 +159,12 @@ impl NativeState {
             self.document_version.store(1, Ordering::Release);
             self.request_inflight.store(false, Ordering::Release);
             self.scroll.store(0, Ordering::Release);
+            self.selected_goal.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             *self.navigation.lock().expect("navigation state poisoned") =
                 "Navigation unavailable".to_owned();
+            *self.navigation_target.lock().expect("navigation state poisoned") = None;
             self.opened.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_OPEN");
         }
@@ -166,10 +176,12 @@ impl NativeState {
             self.request_inflight.store(false, Ordering::Release);
             self.focused.store(false, Ordering::Release);
             self.scroll.store(0, Ordering::Release);
+            self.selected_goal.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             *self.navigation.lock().expect("navigation state poisoned") =
                 "Navigation unavailable".to_owned();
+            *self.navigation_target.lock().expect("navigation state poisoned") = None;
             self.closed.fetch_add(1, Ordering::Relaxed);
             eprintln!("LEAN4_HX_CLOSE");
         }
@@ -258,6 +270,7 @@ impl NativeState {
             };
             self.request_inflight.store(false, Ordering::Release);
             self.scroll.store(0, Ordering::Release);
+            self.selected_goal.store(0, Ordering::Release);
             *self.goal.lock().expect("goal state poisoned") = goal.clone();
             eprintln!("LEAN4_HX_CALLBACK result=reply");
             eprintln!("LEAN4_HX_GOAL generation={generation} text={goal}");
@@ -291,6 +304,8 @@ impl NativeState {
             .ok()
             .and_then(|value| first_location(&value))
             .map(|location| {
+                *self.navigation_target.lock().expect("navigation state poisoned") =
+                    Some(location.clone());
                 let relation = if same_document(&current_uri, &location) {
                     "same-file"
                 } else {
@@ -304,6 +319,51 @@ impl NativeState {
                 "navigation unavailable".to_owned()
             });
         *self.navigation.lock().expect("navigation state poisoned") = navigation;
+    }
+
+    fn navigation_uri(&self) -> String {
+        self.navigation_target
+            .lock()
+            .expect("navigation state poisoned")
+            .as_ref()
+            .map(|location| location.uri.clone())
+            .unwrap_or_default()
+    }
+
+    fn navigation_start_line(&self) -> usize {
+        self.navigation_target
+            .lock()
+            .expect("navigation state poisoned")
+            .as_ref()
+            .map(|location| location.range.start.line as usize)
+            .unwrap_or(0)
+    }
+
+    fn navigation_start_character(&self) -> usize {
+        self.navigation_target
+            .lock()
+            .expect("navigation state poisoned")
+            .as_ref()
+            .map(|location| location.range.start.character as usize)
+            .unwrap_or(0)
+    }
+
+    fn navigation_end_line(&self) -> usize {
+        self.navigation_target
+            .lock()
+            .expect("navigation state poisoned")
+            .as_ref()
+            .map(|location| location.range.end.line as usize)
+            .unwrap_or(0)
+    }
+
+    fn navigation_end_character(&self) -> usize {
+        self.navigation_target
+            .lock()
+            .expect("navigation state poisoned")
+            .as_ref()
+            .map(|location| location.range.end.character as usize)
+            .unwrap_or(0)
     }
 
     fn record_rpc(&self, generation: usize, result: String) {
@@ -338,16 +398,24 @@ impl NativeState {
     }
 
     fn lines(&self) -> Vec<String> {
-        let mut lines = vec![if self.focused() {
-            "Lean goals [focused]".to_owned()
-        } else {
-            "Lean goals [source]".to_owned()
-        }];
-        let body = self
+        let snapshot = self
             .goal_state
             .lock()
             .expect("goal state poisoned")
             .snapshot()
+            .cloned();
+        let count = snapshot.as_ref().map_or(0, |snapshot| snapshot.goals.len());
+        let selected = self
+            .selected_goal
+            .load(Ordering::Acquire)
+            .min(count.saturating_sub(1));
+        let mut lines = vec![format!(
+            "Lean goals [{}] goal {}/{}",
+            if self.focused() { "focused" } else { "source" },
+            if count == 0 { 0 } else { selected + 1 },
+            count
+        )];
+        let body = snapshot
             .map(|snapshot| snapshot.display_lines())
             .unwrap_or_else(|| vec!["Lean goal unavailable".to_owned()]);
         let offset = self.scroll.load(Ordering::Acquire);
@@ -369,6 +437,38 @@ impl NativeState {
         self.scroll.store(
             current.saturating_add(amount).max(0) as usize,
             Ordering::Release,
+        );
+    }
+
+    fn next_goal(&self) {
+        let count = self
+            .goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .snapshot()
+            .map_or(0, |snapshot| snapshot.goals.len());
+        if count > 0 {
+            self.selected_goal
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |index| {
+                    Some((index + 1).min(count - 1))
+                })
+                .ok();
+        }
+        eprintln!(
+            "LEAN4_HX_GOAL_SELECTED index={}",
+            self.selected_goal.load(Ordering::Acquire)
+        );
+    }
+
+    fn previous_goal(&self) {
+        self.selected_goal
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |index| {
+                Some(index.saturating_sub(1))
+            })
+            .ok();
+        eprintln!(
+            "LEAN4_HX_GOAL_SELECTED index={}",
+            self.selected_goal.load(Ordering::Acquire)
         );
     }
 
@@ -414,6 +514,10 @@ impl NativeState {
         unicode::edit_at_cursor(&line, cursor_utf16)
             .map(|edit| edit.cursor_chars)
             .unwrap_or(0)
+    }
+
+    fn utf16_to_chars(&self, line: String, cursor_utf16: usize) -> usize {
+        unicode::utf16_to_chars(&line, cursor_utf16).unwrap_or(0)
     }
 }
 
@@ -478,6 +582,8 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-lines", NativeState::lines)
         .register_fn("native-set-focused!", NativeState::set_focused)
         .register_fn("native-scroll!", NativeState::scroll)
+        .register_fn("native-next-goal!", NativeState::next_goal)
+        .register_fn("native-previous-goal!", NativeState::previous_goal)
         .register_fn("native-summary", NativeState::summary)
         .register_fn("native-unicode-start", NativeState::unicode_start)
         .register_fn("native-unicode-end", NativeState::unicode_end)
@@ -486,6 +592,18 @@ pub fn build_module() -> FFIModule {
             NativeState::unicode_replacement,
         )
         .register_fn("native-unicode-cursor", NativeState::unicode_cursor)
+        .register_fn("native-utf16-to-chars", NativeState::utf16_to_chars)
+        .register_fn("native-navigation-uri", NativeState::navigation_uri)
+        .register_fn("native-navigation-start-line", NativeState::navigation_start_line)
+        .register_fn(
+            "native-navigation-start-character",
+            NativeState::navigation_start_character,
+        )
+        .register_fn("native-navigation-end-line", NativeState::navigation_end_line)
+        .register_fn(
+            "native-navigation-end-character",
+            NativeState::navigation_end_character,
+        )
         .register_fn("native-file-uri", file_uri);
     module
 }

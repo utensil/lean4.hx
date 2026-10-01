@@ -96,6 +96,10 @@ sleep 2
 need "LEAN4_HX_GOAL_AVAILABLE"
 send "\\t"
 need "LEAN4_HX_GOAL_FOCUS focused=true"
+send "n"
+need "LEAN4_HX_GOAL_SELECTED index="
+send "p"
+need "LEAN4_HX_GOAL_SELECTED index="
 send "\\033"
 need "LEAN4_HX_GOAL_FOCUS focused=false"
 send "i"
@@ -142,6 +146,7 @@ for marker in \
     'LEAN4_HX_GOAL_AVAILABLE' \
     'LEAN4_HX_GOAL_FOCUS focused=true' \
     'LEAN4_HX_GOAL_FOCUS focused=false' \
+    'LEAN4_HX_GOAL_SELECTED index=' \
     'LEAN4_HX_REMOVE active=false'; do
     grep -F "$marker" "$pty_log" >/dev/null || {
         echo "missing PTY marker: $marker; preserved evidence at $run_dir" >&2
