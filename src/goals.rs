@@ -1,6 +1,10 @@
 //! Small, versioned goal snapshots shared by the native component and tests.
 
-use crate::protocol::{PlainGoal, PlainTermGoal, Position, Range};
+use crate::{
+    correspondence::{terminal_spans, TerminalSpan, TerminalStyle},
+    protocol::{PlainGoal, PlainTermGoal, Position, Range, TaggedText},
+};
+use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestStamp {
@@ -15,6 +19,10 @@ pub struct GoalSnapshot {
     pub stamp: RequestStamp,
     pub rendered: String,
     pub goals: Vec<String>,
+    /// Per-goal, per-line spans produced from Lean's TaggedText payload.
+    /// Plain goal notifications populate this with unstyled fallback spans.
+    pub styled_goals: Vec<Vec<Vec<TerminalSpan>>>,
+    pub interactive: bool,
     pub term_goal: Option<String>,
     pub term_range: Option<Range>,
     pub unavailable: Option<String>,
@@ -26,6 +34,8 @@ impl GoalSnapshot {
             stamp,
             rendered: String::new(),
             goals: Vec::new(),
+            styled_goals: Vec::new(),
+            interactive: false,
             term_goal: None,
             term_range: None,
             unavailable: Some(reason.into()),
@@ -33,14 +43,141 @@ impl GoalSnapshot {
     }
 
     pub fn from_plain_goal(stamp: RequestStamp, goal: PlainGoal) -> Self {
+        let styled_goals = goal
+            .goals
+            .iter()
+            .map(|goal| {
+                goal.lines()
+                    .map(|line| {
+                        vec![TerminalSpan {
+                            text: line.to_owned(),
+                            style: TerminalStyle::Plain,
+                            tags: Vec::new(),
+                        }]
+                    })
+                    .collect()
+            })
+            .collect();
         Self {
             stamp,
             rendered: goal.rendered,
             goals: goal.goals,
+            styled_goals,
+            interactive: false,
             term_goal: None,
             term_range: None,
             unavailable: None,
         }
+    }
+
+    /// Parse the open-ended result of Lean.Widget.getInteractiveGoals. The
+    /// surrounding RPC schema is intentionally kept as JSON, while each
+    /// tagged type is decoded losslessly for terminal rendering.
+    pub fn from_interactive_goals(stamp: RequestStamp, value: &Value) -> Option<Self> {
+        let value = value.get("result").unwrap_or(value);
+        let goals = value.get("goals")?.as_array()?;
+        let mut rendered_goals = Vec::with_capacity(goals.len());
+        let mut styled_goals = Vec::with_capacity(goals.len());
+        for goal in goals {
+            let Some(object) = goal.as_object() else {
+                let text = "Lean goal unavailable: malformed interactive goal".to_owned();
+                rendered_goals.push(text.clone());
+                styled_goals.push(vec![vec![TerminalSpan {
+                    text,
+                    style: TerminalStyle::Plain,
+                    tags: Vec::new(),
+                }]]);
+                continue;
+            };
+            let prefix = object
+                .get("goalPrefix")
+                .and_then(Value::as_str)
+                .unwrap_or("⊢ ");
+            let mut lines = Vec::new();
+            let mut plain_lines = Vec::new();
+            let mut target = vec![TerminalSpan {
+                text: prefix.to_owned(),
+                style: TerminalStyle::Goal,
+                tags: Vec::new(),
+            }];
+            if let Some(value) = object.get("type") {
+                if let Ok(tagged) = serde_json::from_value::<TaggedText>(value.clone()) {
+                    target.extend(terminal_spans(&tagged));
+                } else {
+                    let text = value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string());
+                    target.push(TerminalSpan {
+                        text,
+                        style: TerminalStyle::Plain,
+                        tags: Vec::new(),
+                    });
+                }
+            }
+            if let Some(hyps) = object.get("hyps").and_then(Value::as_array) {
+                for hyp in hyps {
+                    let Some(hyp_object) = hyp.as_object() else {
+                        let text = "[malformed hypothesis]".to_owned();
+                        plain_lines.push(text.clone());
+                        lines.push(vec![TerminalSpan {
+                            text,
+                            style: TerminalStyle::Plain,
+                            tags: Vec::new(),
+                        }]);
+                        continue;
+                    };
+                    let names = hyp_object
+                        .get("names")
+                        .and_then(Value::as_array)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    let mut line = vec![TerminalSpan {
+                        text: format!("{names} : "),
+                        style: TerminalStyle::Plain,
+                        tags: Vec::new(),
+                    }];
+                    if let Some(value) = hyp_object.get("type") {
+                        if let Ok(tagged) = serde_json::from_value::<TaggedText>(value.clone()) {
+                            line.extend(terminal_spans(&tagged));
+                        } else {
+                            let text = value
+                                .as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| value.to_string());
+                            line.push(TerminalSpan {
+                                text,
+                                style: TerminalStyle::Plain,
+                                tags: Vec::new(),
+                            });
+                        }
+                    }
+                    plain_lines.push(spans_text(&line));
+                    lines.push(line);
+                }
+            }
+            plain_lines.push(spans_text(&target));
+            lines.push(target);
+            rendered_goals.push(plain_lines.join("\n"));
+            styled_goals.push(lines);
+        }
+        let rendered = rendered_goals.join("\n\n");
+        Some(Self {
+            stamp,
+            rendered,
+            goals: rendered_goals,
+            styled_goals,
+            interactive: true,
+            term_goal: None,
+            term_range: None,
+            unavailable: None,
+        })
     }
 
     pub fn with_term_goal(mut self, goal: PlainTermGoal) -> Self {
@@ -82,6 +219,28 @@ impl GoalSnapshot {
         }
         lines
     }
+
+    pub fn styled_lines(&self, selected: usize) -> Vec<Vec<TerminalSpan>> {
+        self.styled_goals
+            .get(selected.min(self.styled_goals.len().saturating_sub(1)))
+            .cloned()
+            .unwrap_or_else(|| {
+                self.display_lines()
+                    .into_iter()
+                    .map(|text| {
+                        vec![TerminalSpan {
+                            text,
+                            style: TerminalStyle::Plain,
+                            tags: Vec::new(),
+                        }]
+                    })
+                    .collect()
+            })
+    }
+}
+
+fn spans_text(spans: &[TerminalSpan]) -> String {
+    spans.iter().map(|span| span.text.as_str()).collect()
 }
 
 #[derive(Clone, Debug)]
@@ -135,6 +294,13 @@ impl GoalState {
         if stamp.generation != generation {
             return false;
         }
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.stamp == stamp && snapshot.interactive)
+        {
+            return true;
+        }
         self.accept(GoalSnapshot::from_plain_goal(stamp, goal))
     }
 
@@ -159,6 +325,10 @@ impl GoalState {
         self.snapshot.as_ref()
     }
 
+    pub fn active_stamp(&self) -> Option<&RequestStamp> {
+        self.active.as_ref()
+    }
+
     pub fn display_text(&self) -> String {
         self.snapshot.as_ref().map_or_else(
             || "Lean goal unavailable".to_owned(),
@@ -171,6 +341,7 @@ impl GoalState {
 mod tests {
     use super::*;
     use crate::protocol::{Extras, PlainGoal, PlainTermGoal};
+    use serde_json::json;
 
     fn position() -> Position {
         Position {
@@ -251,5 +422,50 @@ mod tests {
         assert!(state.snapshot().is_none());
         let reopened = state.begin("file:///Main.lean", 1, position());
         assert!(reopened.generation > stamp.generation);
+    }
+
+    #[test]
+    fn interactive_goals_preserve_hypotheses_and_tag_styles() {
+        let stamp = RequestStamp {
+            uri: "file:///Main.lean".into(),
+            version: 1,
+            position: position(),
+            generation: 1,
+        };
+        let value = json!({"goals":[{
+            "goalPrefix":"⊢ ",
+            "hyps":[{"names":["x"],"type":{"tag":[{"info":{"p":"0"},"subexprPos":"/"},{"text":"Nat"}]}}],
+            "type":{"tag":[{"info":{"p":"1"},"subexprPos":"/0"},{"text":"x = x"}]}
+        }]});
+        let snapshot = GoalSnapshot::from_interactive_goals(stamp, &value).unwrap();
+        assert_eq!(snapshot.goals.len(), 1);
+        assert!(snapshot.goals[0].contains("x : Nat"));
+        let lines = snapshot.styled_lines(0);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1]
+            .iter()
+            .any(|span| span.style == TerminalStyle::Goal));
+        assert!(lines[0]
+            .iter()
+            .any(|span| span.style == TerminalStyle::Type));
+    }
+
+    #[test]
+    fn malformed_interactive_items_leave_other_goals_renderable() {
+        let stamp = RequestStamp {
+            uri: "file:///Main.lean".into(),
+            version: 1,
+            position: position(),
+            generation: 1,
+        };
+        let value = json!({"goals":[
+            7,
+            {"goalPrefix":"⊢ ","hyps":[null],"type":{"tag":["bad"]}}
+        ]});
+        let snapshot = GoalSnapshot::from_interactive_goals(stamp, &value).unwrap();
+        assert_eq!(snapshot.goals.len(), 2);
+        assert!(snapshot.goals[0].contains("malformed interactive goal"));
+        assert!(snapshot.goals[1].contains("malformed hypothesis"));
+        assert!(snapshot.goals[1].contains("bad"));
     }
 }

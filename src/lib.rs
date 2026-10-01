@@ -21,7 +21,7 @@ use steel::{
 };
 
 use crate::{
-    correspondence::{first_location, same_document},
+    correspondence::{first_location, same_document, TerminalStyle},
     goals::GoalState,
     protocol::{Extras, PlainGoal, Position},
 };
@@ -241,15 +241,12 @@ impl NativeState {
             "Navigation unavailable".to_owned();
     }
 
-    fn record_request(&self, path: String, line: usize, character: usize) {
+    fn record_request(&self, _path: String, line: usize, character: usize) {
         if self.is_active() {
             self.requests.fetch_add(1, Ordering::Relaxed);
             let mut last = self.last_request.lock().expect("request state poisoned");
-            *last = format!("line={line},character={character},uri={}", file_uri(&path));
-            eprintln!(
-                "LEAN4_HX_REQUEST line={line} character={character} uri={}",
-                file_uri(&path)
-            );
+            *last = format!("line={line},character={character}");
+            eprintln!("LEAN4_HX_REQUEST line={line} character={character}");
         }
     }
 
@@ -289,7 +286,10 @@ impl NativeState {
             self.selected_goal.store(0, Ordering::Release);
             *self.goal.lock().expect("goal state poisoned") = goal.clone();
             eprintln!("LEAN4_HX_CALLBACK result=reply");
-            eprintln!("LEAN4_HX_GOAL generation={generation} text={goal}");
+            eprintln!(
+                "LEAN4_HX_GOAL generation={generation} available={}",
+                goal != "Lean goal unavailable" && !goal.is_empty()
+            );
             if goal != "Lean goal unavailable" && !goal.is_empty() {
                 let lines = self
                     .goal_state
@@ -333,7 +333,7 @@ impl NativeState {
                 } else {
                     "cross-file"
                 };
-                eprintln!("LEAN4_HX_NAVIGATION {relation} uri={}", location.uri);
+                eprintln!("LEAN4_HX_NAVIGATION {relation}");
                 format!("navigation {relation}")
             })
             .unwrap_or_else(|| {
@@ -417,6 +417,36 @@ impl NativeState {
         if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
             if result.contains("sessionId") {
                 eprintln!("LEAN4_HX_RPC action=connect");
+            } else if let Ok(value) = serde_json::from_str::<Value>(&result) {
+                let stamp = self
+                    .goal_state
+                    .lock()
+                    .expect("goal state poisoned")
+                    .active_stamp()
+                    .filter(|stamp| stamp.generation == generation as u64)
+                    .cloned();
+                if let Some(stamp) = stamp {
+                    if let Some(snapshot) =
+                        crate::goals::GoalSnapshot::from_interactive_goals(stamp, &value)
+                    {
+                        let mut state = self.goal_state.lock().expect("goal state poisoned");
+                        if state.accept(snapshot) {
+                            let text = state.display_text();
+                            *self.goal.lock().expect("goal state poisoned") = text.clone();
+                            self.request_inflight.store(false, Ordering::Release);
+                            self.scroll.store(0, Ordering::Release);
+                            self.selected_goal.store(0, Ordering::Release);
+                            let lines = state
+                                .snapshot()
+                                .map(|snapshot| snapshot.display_lines().len())
+                                .unwrap_or(0);
+                            eprintln!("LEAN4_HX_RPC action=interactive-goals");
+                            eprintln!("LEAN4_HX_TAGGED_RENDER_READY lines={lines} available=true");
+                            return;
+                        }
+                    }
+                }
+                eprintln!("LEAN4_HX_RPC action=reply");
             } else {
                 eprintln!("LEAN4_HX_RPC action=reply");
             }
@@ -440,7 +470,10 @@ impl NativeState {
             .lock()
             .expect("navigation state poisoned")
             .clone();
-        eprintln!("LEAN4_HX_RENDER {goal}");
+        eprintln!(
+            "LEAN4_HX_RENDER available={}",
+            goal != "Lean goal unavailable" && !goal.is_empty()
+        );
         format!("lean4.hx goal {renders}: {goal} [{navigation}]")
     }
 
@@ -481,6 +514,65 @@ impl NativeState {
         self.scroll.store(offset, Ordering::Release);
         lines.extend(body.into_iter().skip(offset));
         lines
+    }
+
+    fn styled_lines(&self, width: usize) -> String {
+        let snapshot = self
+            .goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .snapshot()
+            .cloned();
+        let selected = self.selected_goal.load(Ordering::Acquire);
+        let body = snapshot
+            .map(|snapshot| snapshot.styled_lines(selected))
+            .unwrap_or_else(|| {
+                vec![vec![crate::correspondence::TerminalSpan {
+                    text: "Lean goal unavailable".to_owned(),
+                    style: TerminalStyle::Plain,
+                    tags: Vec::new(),
+                }]]
+            });
+        let lines = crate::correspondence::layout_lines(&body, width);
+        let offset = self
+            .scroll
+            .load(Ordering::Acquire)
+            .min(lines.len().saturating_sub(1));
+        self.scroll.store(offset, Ordering::Release);
+        serde_json::to_string(&lines.into_iter().skip(offset).collect::<Vec<_>>()).unwrap()
+    }
+
+    fn generation_current(&self, generation: usize) -> bool {
+        self.is_active() && self.generation.load(Ordering::Acquire) == generation
+    }
+
+    fn rpc_goals_request(&self, generation: usize, result: String) -> String {
+        if !self.generation_current(generation) {
+            return "{}".into();
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&result) else {
+            return "{}".into();
+        };
+        let Some(session) = value.get("sessionId").cloned() else {
+            return "{}".into();
+        };
+        let state = self.goal_state.lock().expect("goal state poisoned");
+        let Some(stamp) = state
+            .active_stamp()
+            .filter(|s| s.generation == generation as u64)
+        else {
+            return "{}".into();
+        };
+        let params =
+            serde_json::json!({"textDocument":{"uri":stamp.uri},"position":stamp.position});
+        let request =
+            serde_json::json!({"textDocument":{"uri":stamp.uri},"position":stamp.position,
+            "sessionId":session,"method":"Lean.Widget.getInteractiveGoals","params":params})
+            .to_string();
+        eprintln!(
+            "LEAN4_HX_RPC_REQUEST generation={generation} method=Lean.Widget.getInteractiveGoals"
+        );
+        request
     }
 
     fn focused(&self) -> bool {
@@ -671,6 +763,12 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-record-rpc!", NativeState::record_rpc)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)
+        .register_fn("native-styled-lines", NativeState::styled_lines)
+        .register_fn("native-rpc-goals-request", NativeState::rpc_goals_request)
+        .register_fn(
+            "native-generation-current?",
+            NativeState::generation_current,
+        )
         .register_fn("native-focused?", NativeState::focused)
         .register_fn("native-set-focused!", NativeState::set_focused)
         .register_fn("native-scroll!", NativeState::scroll)
@@ -752,5 +850,18 @@ mod tests {
         );
         let reopened = state.begin_request("/tmp/Main.lean".into(), 1, 0);
         assert!(reopened > generation);
+    }
+
+    #[test]
+    fn rpc_goal_request_preserves_numeric_and_string_session_ids() {
+        for session in [r#"1241.0"#, r#""session-7""#] {
+            let state = NativeState::new();
+            state.activate();
+            let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+            let result = format!(r#"{{"sessionId":{session}}}"#);
+            let request = state.rpc_goals_request(generation, result);
+            assert!(request.contains(&format!("\"sessionId\":{session}")));
+            assert!(request.contains("Lean.Widget.getInteractiveGoals"));
+        }
     }
 }

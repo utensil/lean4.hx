@@ -11,7 +11,7 @@
            native-record-selection! native-record-document-change! native-record-open!
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
-           native-record-rpc! native-label native-lines native-summary native-file-uri
+           native-generation-current? native-rpc-goals-request native-record-rpc! native-label native-lines native-styled-lines native-summary native-file-uri
            native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
@@ -127,9 +127,37 @@
 
 (define (lean4-hx-on-rpc generation result)
   (if (native-active? lean4-hx-native)
-      (native-record-rpc! lean4-hx-native generation
-                          (value->jsexpr-string result))
-      #f))
+      (begin
+        (native-record-rpc! lean4-hx-native generation
+                            (value->jsexpr-string result))
+        (let ([request (string->jsexpr
+                        (native-rpc-goals-request lean4-hx-native generation
+                                                  (value->jsexpr-string result)))])
+          (if (hash-contains? request 'sessionId)
+              (let* ([position (hash-ref request 'position)]
+                     [line (exact (hash-ref position 'line))]
+                     [character (exact (hash-ref position 'character))]
+                     [position (hash-insert
+                                (hash-insert position 'line line)
+                                'character character)]
+                     [params (hash-ref request 'params)]
+                     [params (hash-insert
+                              (hash-insert params 'position position)
+                              'textDocument (hash-ref request 'textDocument))]
+                     [request (hash-insert
+                               (hash-insert request 'position position)
+                               'params params)])
+                (hx.enqueue-thread-local-callback-with-delay
+                 0
+                 (lambda ()
+                   (if (native-generation-current? lean4-hx-native generation)
+                       (hx.send-lsp-command "lean" "$/lean/rpc/call" request
+                                            (lambda (reply)
+                                              (native-record-rpc! lean4-hx-native generation
+                                                                  (value->jsexpr-string reply))))
+                       #f)))
+              #f)))
+      #f)))
 
 (define (lean4-hx-request-lean-info!)
   (let ([path (static.cx->current-file)])
@@ -162,13 +190,13 @@
   ;; Capture the whole target before opening: open/selection hooks invalidate it.
   (let* ([target-json (native-navigation-target lean4-hx-native)]
          [target (string->jsexpr target-json)])
-    (if (not (hash-contains? target "path"))
+    (if (not (hash-contains? target 'path))
         (hx.set-warning! "lean4.hx: navigation unavailable")
-        (let ([path (hash-ref target "path")]
-              [start-line (hash-ref target "start-line")]
-              [end-line (hash-ref target "end-line")]
-              [start-character (hash-ref target "start-character")]
-              [end-character (hash-ref target "end-character")])
+        (let ([path (hash-ref target 'path)]
+              [start-line (exact (hash-ref target 'start-line))]
+              [end-line (exact (hash-ref target 'end-line))]
+              [start-character (exact (hash-ref target 'start-character))]
+              [end-character (exact (hash-ref target 'end-character))])
         (begin
           (command.open path)
           (let* ([view (editor.editor-focus)]
@@ -194,16 +222,38 @@
 (define (lean4-hx-render state area frame)
   (let ([row (components.area-y area)]
         [last-row (+ (components.area-y area) (components.area-height area))])
-    (for-each
-     (lambda (line)
-       (if (< row last-row)
-           (components.frame-set-string! frame
-                                         (components.area-x area)
-                                         row
-                                         line
-                                         (components.style)))
-       (set! row (+ row 1)))
-     (native-lines state))))
+    (if (< row last-row)
+        (components.frame-set-string! frame
+                                      (components.area-x area)
+                                      row
+                                      (car (native-lines state))
+                                      (components.style)))
+    (set! row (+ row 1))
+    (let ([styled (string->jsexpr
+                   (native-styled-lines state (components.area-width area)))])
+      (for-each
+       (lambda (line)
+         (if (< row last-row)
+             (for-each
+              (lambda (span)
+                (let* ([style-name (hash-ref span 'style)]
+                       [style (cond
+                               [(string=? style-name "goal")
+                                (components.style-with-bold (components.style))]
+                               [(string=? style-name "type")
+                                (components.style-fg (components.style) components.Color/Cyan)]
+                               [(string=? style-name "keyword")
+                                (components.style-fg (components.style) components.Color/Yellow)]
+                               [(string=? style-name "error")
+                                (components.style-fg (components.style) components.Color/Red)]
+                               [else (components.style)])])
+                  (components.frame-set-string!
+                   frame (+ (components.area-x area) (exact (hash-ref span 'column)))
+                   row (hash-ref span 'text) style)))
+              line)
+             #f)
+         (set! row (+ row 1)))
+       styled))))
 
 (define (lean4-hx-handle-event state event)
   (cond

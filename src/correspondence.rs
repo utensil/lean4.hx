@@ -2,6 +2,8 @@
 
 use crate::protocol::{Extras, Location, TaggedText};
 use serde_json::Value;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StyledSpan {
@@ -22,19 +24,79 @@ pub enum TerminalStyle {
 pub struct TerminalSpan {
     pub text: String,
     pub style: TerminalStyle,
+    /// Opaque Lean `SubexprInfo` tags retained for a later source action.
+    pub tags: Vec<Value>,
+}
+
+/// Wrap by terminal cells, preserving grapheme clusters and style boundaries.
+pub fn layout_lines(lines: &[Vec<TerminalSpan>], width: usize) -> Vec<Vec<Value>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for line in lines {
+        let mut row = Vec::new();
+        let mut column = 0;
+        for span in line {
+            let style = match span.style {
+                TerminalStyle::Plain => "plain",
+                TerminalStyle::Keyword => "keyword",
+                TerminalStyle::Type => "type",
+                TerminalStyle::Goal => "goal",
+                TerminalStyle::Error => "error",
+            };
+            for cluster in span.text.graphemes(true) {
+                if cluster == "\n" || cluster == "\r\n" {
+                    out.push(std::mem::take(&mut row));
+                    column = 0;
+                    continue;
+                }
+                let text = if cluster == "\t" { "    " } else { cluster };
+                let cells = UnicodeWidthStr::width(text);
+                if cells > width {
+                    // A single wide grapheme must remain visible even in a
+                    // narrow panel. The terminal clips it at the edge; dropping
+                    // it would silently lose source text.
+                    if !row.is_empty() {
+                        out.push(std::mem::take(&mut row));
+                    }
+                    row.push(serde_json::json!({"column":0,"text":text,"style":style}));
+                    out.push(std::mem::take(&mut row));
+                    column = 0;
+                } else {
+                    if column + cells > width {
+                        out.push(std::mem::take(&mut row));
+                        column = 0;
+                    }
+                    row.push(serde_json::json!({"column":column,"text":text,"style":style}));
+                    column += cells;
+                }
+            }
+        }
+        if !row.is_empty() {
+            out.push(row);
+        }
+    }
+    out
 }
 
 fn style_for_tags(tags: &[Value]) -> TerminalStyle {
     for tag in tags.iter().rev() {
-        let Some(kind) = tag.get("kind").and_then(Value::as_str) else {
-            continue;
-        };
-        match kind {
-            "keyword" | "tactic" => return TerminalStyle::Keyword,
-            "type" | "typename" => return TerminalStyle::Type,
-            "goal" | "target" => return TerminalStyle::Goal,
-            "error" => return TerminalStyle::Error,
-            _ => {}
+        if let Some(kind) = tag.get("kind").and_then(Value::as_str) {
+            match kind {
+                "keyword" | "tactic" => return TerminalStyle::Keyword,
+                "type" | "typename" => return TerminalStyle::Type,
+                "goal" | "target" => return TerminalStyle::Goal,
+                "error" => return TerminalStyle::Error,
+                _ => {}
+            }
+        }
+        // Lean.Widget.getInteractiveGoals uses opaque info and subexpression
+        // positions as its tag payload rather than a display-oriented kind.
+        // Preserve that semantic boundary by giving tagged terms the type
+        // style while leaving untagged punctuation plain.
+        if tag.get("subexprPos").is_some() || tag.get("info").is_some() {
+            return TerminalStyle::Type;
         }
     }
     TerminalStyle::Plain
@@ -47,7 +109,7 @@ pub fn terminal_spans(value: &TaggedText) -> Vec<TerminalSpan> {
     for span in flatten_tagged_text(value) {
         let style = style_for_tags(&span.tags);
         if let Some(previous) = out.last_mut() {
-            if previous.style == style {
+            if previous.style == style && previous.tags == span.tags {
                 previous.text.push_str(&span.text);
                 continue;
             }
@@ -55,6 +117,7 @@ pub fn terminal_spans(value: &TaggedText) -> Vec<TerminalSpan> {
         out.push(TerminalSpan {
             text: span.text,
             style,
+            tags: span.tags,
         });
     }
     out
@@ -186,6 +249,19 @@ mod tests {
         assert_eq!(spans[0].text, "⊢ Nat");
         assert_eq!(spans[1].style, TerminalStyle::Plain);
         assert!(spans[1].text.contains("future"));
+    }
+
+    #[test]
+    fn terminal_layout_keeps_a_wide_grapheme_in_a_narrow_panel() {
+        let lines = vec![vec![TerminalSpan {
+            text: "界".into(),
+            style: TerminalStyle::Type,
+            tags: vec![serde_json::json!({"info": {"__rpcref": 1}})],
+        }]];
+        let rendered = layout_lines(&lines, 1);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0][0]["text"], "界");
+        assert_eq!(lines[0][0].tags[0]["info"]["__rpcref"], 1);
     }
 
     #[test]
