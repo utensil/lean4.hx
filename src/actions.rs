@@ -46,6 +46,92 @@ pub fn validate_text_edit(edit: &TextEdit, current: &RequestStamp) -> Result<(),
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct PreparedTextEdit<'a> {
+    start: usize,
+    end: usize,
+    new_text: &'a str,
+}
+
+/// Validate a single-document workspace edit without changing the source.
+///
+/// Every edit must belong to the same current URI, document version, and
+/// lifecycle generation.  All UTF-16 ranges are resolved before success is
+/// returned, and overlapping (or same-position) edits are rejected so callers
+/// can apply the complete edit as one safe transaction.
+pub fn preflight_workspace_edit(
+    source: &str,
+    edits: &[TextEdit],
+    current: &RequestStamp,
+) -> Result<(), ActionError> {
+    prepare_workspace_edit(source, edits, current).map(|_| ())
+}
+
+/// Apply a validated single-document workspace edit atomically.
+///
+/// This is deliberately limited to one document: the provenance fields on
+/// each [`TextEdit`] are checked against one [`RequestStamp`].  The complete
+/// edit is prepared before any output is constructed, so a stale, malformed,
+/// or overlapping member cannot leave a partially applied result.
+pub fn apply_workspace_edit(
+    source: &str,
+    edits: &[TextEdit],
+    current: &RequestStamp,
+) -> Result<String, ActionError> {
+    let prepared = prepare_workspace_edit(source, edits, current)?;
+    let replacement_len = prepared
+        .iter()
+        .map(|edit| edit.new_text.len())
+        .sum::<usize>();
+    let mut result = String::with_capacity(source.len() + replacement_len);
+    let mut cursor = 0usize;
+    for edit in prepared {
+        result.push_str(&source[cursor..edit.start]);
+        result.push_str(edit.new_text);
+        cursor = edit.end;
+    }
+    result.push_str(&source[cursor..]);
+    Ok(result)
+}
+
+fn prepare_workspace_edit<'a>(
+    source: &str,
+    edits: &'a [TextEdit],
+    current: &RequestStamp,
+) -> Result<Vec<PreparedTextEdit<'a>>, ActionError> {
+    // Check provenance for every member before resolving any ranges.  This
+    // keeps a mixed or stale workspace edit fail-closed as a whole.
+    for edit in edits {
+        validate_text_edit(edit, current)?;
+    }
+
+    let mut prepared = edits
+        .iter()
+        .map(|edit| {
+            let start = byte_offset(source, &edit.range.start)?;
+            let end = byte_offset(source, &edit.range.end)?;
+            if start > end {
+                return Err(ActionError::InvalidRange("start follows end".into()));
+            }
+            Ok(PreparedTextEdit {
+                start,
+                end,
+                new_text: &edit.new_text,
+            })
+        })
+        .collect::<Result<Vec<_>, ActionError>>()?;
+
+    prepared.sort_by_key(|edit| (edit.start, edit.end));
+    for pair in prepared.windows(2) {
+        // A same-position pair is rejected even when one edit is an
+        // insertion: LSP does not define an ordering for those replacements.
+        if pair[1].start < pair[0].end || pair[1].start == pair[0].start {
+            return Err(ActionError::InvalidRange("workspace edits overlap".into()));
+        }
+    }
+    Ok(prepared)
+}
+
 pub fn validate_rpc_action(action: &RpcAction, current: &RequestStamp) -> Result<(), ActionError> {
     if action.generation != current.generation {
         return Err(ActionError::Stale);
@@ -199,6 +285,176 @@ mod tests {
             extra: Extras::new(),
         };
         assert_eq!(apply_text_edit("aé\nβ", &range, "x").unwrap(), "ax\nβ");
+    }
+
+    #[test]
+    fn workspace_edit_applies_unsorted_non_overlapping_ranges() {
+        let current = stamp();
+        let first = TextEdit {
+            uri: current.uri.clone(),
+            version: current.version,
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                    extra: Extras::new(),
+                },
+                end: Position {
+                    line: 0,
+                    character: 1,
+                    extra: Extras::new(),
+                },
+                extra: Extras::new(),
+            },
+            new_text: "x".into(),
+            generation: current.generation,
+        };
+        let second = TextEdit {
+            uri: current.uri.clone(),
+            version: current.version,
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 1,
+                    extra: Extras::new(),
+                },
+                end: Position {
+                    line: 0,
+                    character: 2,
+                    extra: Extras::new(),
+                },
+                extra: Extras::new(),
+            },
+            new_text: "y".into(),
+            generation: current.generation,
+        };
+        let edits = [second, first];
+        preflight_workspace_edit("aé\nβ", &edits, &current).unwrap();
+        assert_eq!(
+            apply_workspace_edit("aé\nβ", &edits, &current).unwrap(),
+            "xy\nβ"
+        );
+    }
+
+    #[test]
+    fn workspace_edit_rejects_overlap_and_provenance_mismatch() {
+        let current = stamp();
+        let first = TextEdit {
+            uri: current.uri.clone(),
+            version: current.version,
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                    extra: Extras::new(),
+                },
+                end: Position {
+                    line: 0,
+                    character: 2,
+                    extra: Extras::new(),
+                },
+                extra: Extras::new(),
+            },
+            new_text: "x".into(),
+            generation: current.generation,
+        };
+        let second = TextEdit {
+            uri: current.uri.clone(),
+            version: current.version,
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 1,
+                    extra: Extras::new(),
+                },
+                end: Position {
+                    line: 0,
+                    character: 2,
+                    extra: Extras::new(),
+                },
+                extra: Extras::new(),
+            },
+            new_text: "y".into(),
+            generation: current.generation,
+        };
+        assert_eq!(
+            preflight_workspace_edit("abc", &[first.clone(), second.clone()], &current),
+            Err(ActionError::InvalidRange("workspace edits overlap".into()))
+        );
+        assert_eq!(
+            apply_workspace_edit("abc", &[first, second.clone()], &current),
+            Err(ActionError::InvalidRange("workspace edits overlap".into()))
+        );
+
+        let mut stale = second.clone();
+        stale.generation += 1;
+        assert_eq!(
+            preflight_workspace_edit("abc", &[stale], &current),
+            Err(ActionError::Stale)
+        );
+        let mut wrong_version = second;
+        wrong_version.version += 1;
+        assert_eq!(
+            preflight_workspace_edit("abc", &[wrong_version], &current),
+            Err(ActionError::VersionMismatch)
+        );
+    }
+
+    #[test]
+    fn workspace_edit_preflights_every_range_before_returning() {
+        let current = stamp();
+        let valid = TextEdit {
+            uri: current.uri.clone(),
+            version: current.version,
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                    extra: Extras::new(),
+                },
+                end: Position {
+                    line: 0,
+                    character: 1,
+                    extra: Extras::new(),
+                },
+                extra: Extras::new(),
+            },
+            new_text: "x".into(),
+            generation: current.generation,
+        };
+        let invalid = TextEdit {
+            uri: current.uri.clone(),
+            version: current.version,
+            range: Range {
+                start: Position {
+                    line: 4,
+                    character: 0,
+                    extra: Extras::new(),
+                },
+                end: Position {
+                    line: 4,
+                    character: 0,
+                    extra: Extras::new(),
+                },
+                extra: Extras::new(),
+            },
+            new_text: "y".into(),
+            generation: current.generation,
+        };
+        let edits = [valid, invalid];
+        let expected_preflight = Err(ActionError::InvalidRange(
+            "line is outside the document".into(),
+        ));
+        assert_eq!(
+            preflight_workspace_edit("abc", &edits, &current),
+            expected_preflight
+        );
+        assert_eq!(
+            apply_workspace_edit("abc", &edits, &current),
+            Err(ActionError::InvalidRange(
+                "line is outside the document".into()
+            ))
+        );
     }
 
     #[test]

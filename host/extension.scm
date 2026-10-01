@@ -22,6 +22,7 @@
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
 (provide lean4-hx-request-lean-info!)
+(provide lean4-hx-code-action!)
 (provide lean4-hx-summary)
 (provide lean4-hx-native)
 
@@ -185,6 +186,12 @@
                 #f))
           (lean4-hx-status "lean4.hx Lean request"))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
+
+;; Delegate ordinary Lean fixes to Helix's stock, version-aware code-action
+;; picker.  The server resolves and applies the selected action through the
+;; host's normal undo/history path.
+(define (lean4-hx-code-action!)
+  (static.code_action))
 
 (define (lean4-hx-apply-navigation!)
   ;; Capture the whole target before opening: open/selection hooks invalidate it.
