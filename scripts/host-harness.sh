@@ -4,41 +4,19 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-pin_file=$repo_root/HOST-PINS.toml
-
-if [ ! -f "$pin_file" ]; then
-    echo "missing pin file: $pin_file" >&2
-    exit 1
-fi
-
-pin_value() {
-    section=$1
-    key=$2
-    awk -v wanted_section="[$section]" -v wanted_key="$key" '
-        $0 == wanted_section { active = 1; next }
-        /^\[/ { active = 0 }
-        active && $1 == wanted_key {
-            sub(/^[^\"]*\"/, "")
-            sub(/\".*$/, "")
-            print
-            exit
-        }
-    ' "$pin_file"
-}
-
 lean_toolchain=$(sed -n '1p' "$repo_root/.lean-toolchain")
 rust_toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo_root/rust-toolchain.toml")
-helix_url=$(pin_value helix repository)
-helix_branch=$(pin_value helix branch)
-helix_commit=$(pin_value helix commit)
-steel_url=$(pin_value steel repository)
-steel_branch=$(pin_value steel branch)
-steel_commit=$(pin_value steel commit)
+helix_url=https://github.com/utensil/helix.git
+helix_branch=lean-dev
+helix_commit=df595c7dc5729e2712c79dd2e35977e3474b3ec6
+steel_url=https://github.com/utensil/steel.git
+steel_branch=lean-dev
+steel_commit=24cd21598c091fb88bc10a6375a1ded25e677c37
 
 for value in "$lean_toolchain" "$rust_toolchain" "$helix_url" "$helix_branch" \
     "$helix_commit" "$steel_url" "$steel_branch" "$steel_commit"; do
     if [ -z "$value" ]; then
-        echo "an expected pin is missing from $pin_file or the toolchain files" >&2
+        echo "an expected dependency or toolchain pin is missing" >&2
         exit 1
     fi
 done

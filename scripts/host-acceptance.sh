@@ -6,24 +6,13 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-pin_file=$repo_root/HOST-PINS.toml
 fixture=$repo_root/tests/host/project
 host_tmp=${TMPDIR:-/tmp}
 helix_dir=${HOST_HELIX_DIR:-$host_tmp/lean4hx-helix}
 steel_dir=${HOST_STEEL_DIR:-$host_tmp/lean4hx-steel}
 
-pin_value() {
-    section=$1
-    key=$2
-    awk -v wanted_section="[$section]" -v wanted_key="$key" '
-        $0 == wanted_section { active = 1; next }
-        /^\[/ { active = 0 }
-        active && $1 == wanted_key { sub(/^[^\"]*\"/, ""); sub(/\".*$/, ""); print; exit }
-    ' "$pin_file"
-}
-
-expected_helix=$(pin_value helix commit)
-expected_steel=$(pin_value steel commit)
+expected_helix=df595c7dc5729e2712c79dd2e35977e3474b3ec6
+expected_steel=24cd21598c091fb88bc10a6375a1ded25e677c37
 [ -d "$helix_dir/.git" ] || { echo "set HOST_HELIX_DIR to the pinned Helix checkout" >&2; exit 1; }
 [ -d "$steel_dir/.git" ] || { echo "set HOST_STEEL_DIR to the pinned Steel checkout" >&2; exit 1; }
 [ "$(git -C "$helix_dir" rev-parse HEAD)" = "$expected_helix" ] || {

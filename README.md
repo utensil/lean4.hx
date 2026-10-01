@@ -12,8 +12,6 @@ experimental; it is not yet a packaged editor extension.
 - Lean `v4.34.0`
 - Rust `1.100.0-nightly`
 
-The exact host inputs are recorded in `HOST-PINS.toml`.
-
 ## Development
 
 ```sh
