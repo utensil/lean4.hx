@@ -57,6 +57,8 @@ struct NativeState {
     navigation_target: Mutex<Option<crate::protocol::Location>>,
     current_uri: Mutex<String>,
     goal_state: Mutex<GoalState>,
+    rpc_session: Mutex<Option<Value>>,
+    rpc_refs: Mutex<Vec<Value>>,
 }
 
 impl Custom for NativeState {}
@@ -87,7 +89,14 @@ impl NativeState {
             navigation_target: Mutex::new(None),
             current_uri: Mutex::new(String::new()),
             goal_state: Mutex::new(GoalState::default()),
+            rpc_session: Mutex::new(None),
+            rpc_refs: Mutex::new(Vec::new()),
         }
+    }
+
+    fn clear_rpc_session(&self) {
+        *self.rpc_session.lock().expect("rpc state poisoned") = None;
+        self.rpc_refs.lock().expect("rpc state poisoned").clear();
     }
 
     fn activate(&self) {
@@ -98,6 +107,7 @@ impl NativeState {
 
     fn deactivate(&self) {
         self.active.store(false, Ordering::Release);
+        self.clear_rpc_session();
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
         self.focused.store(false, Ordering::Release);
@@ -161,6 +171,7 @@ impl NativeState {
 
     fn record_opened(&self) {
         if self.is_active() {
+            self.clear_rpc_session();
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.document_version.store(1, Ordering::Release);
             self.request_inflight.store(false, Ordering::Release);
@@ -181,6 +192,7 @@ impl NativeState {
 
     fn record_closed(&self) {
         if self.is_active() {
+            self.clear_rpc_session();
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.request_inflight.store(false, Ordering::Release);
             self.focused.store(false, Ordering::Release);
@@ -413,11 +425,45 @@ impl NativeState {
             .unwrap_or(0)
     }
 
+    fn collect_rpc_refs(value: &Value, refs: &mut Vec<Value>) {
+        match value {
+            Value::Object(object)
+                if object.len() == 1
+                    && (object.contains_key("__rpcref") || object.contains_key("p")) =>
+            {
+                if !refs.iter().any(|existing| existing == value) {
+                    refs.push(value.clone());
+                }
+            }
+            Value::Object(object) => object
+                .values()
+                .for_each(|value| Self::collect_rpc_refs(value, refs)),
+            Value::Array(values) => values
+                .iter()
+                .for_each(|value| Self::collect_rpc_refs(value, refs)),
+            _ => {}
+        }
+    }
+
     fn record_rpc(&self, generation: usize, result: String) {
         if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
-            if result.contains("sessionId") {
+            let Ok(value) = serde_json::from_str::<Value>(&result) else {
+                eprintln!("LEAN4_HX_RPC action=reply");
+                return;
+            };
+            if value.get("error").is_some() {
+                self.clear_rpc_session();
+                eprintln!("LEAN4_HX_RPC action=error");
+                return;
+            }
+            if let Some(session) = value.get("sessionId") {
+                let mut current = self.rpc_session.lock().expect("rpc state poisoned");
+                if current.as_ref() != Some(session) {
+                    *current = Some(session.clone());
+                    self.rpc_refs.lock().expect("rpc state poisoned").clear();
+                }
                 eprintln!("LEAN4_HX_RPC action=connect");
-            } else if let Ok(value) = serde_json::from_str::<Value>(&result) {
+            } else {
                 let stamp = self
                     .goal_state
                     .lock()
@@ -429,6 +475,9 @@ impl NativeState {
                     if let Some(snapshot) =
                         crate::goals::GoalSnapshot::from_interactive_goals(stamp, &value)
                     {
+                        let mut refs = Vec::new();
+                        Self::collect_rpc_refs(&value, &mut refs);
+                        *self.rpc_refs.lock().expect("rpc state poisoned") = refs;
                         let mut state = self.goal_state.lock().expect("goal state poisoned");
                         if state.accept(snapshot) {
                             let text = state.display_text();
@@ -447,12 +496,78 @@ impl NativeState {
                     }
                 }
                 eprintln!("LEAN4_HX_RPC action=reply");
-            } else {
-                eprintln!("LEAN4_HX_RPC action=reply");
             }
         } else {
             eprintln!("LEAN4_HX_RPC stale");
         }
+    }
+
+    fn rpc_session_current(&self, _generation: usize) -> bool {
+        self.is_active()
+            && self
+                .rpc_session
+                .lock()
+                .expect("rpc state poisoned")
+                .is_some()
+    }
+
+    fn rpc_session_goals_request(&self, generation: usize) -> String {
+        if !self.generation_current(generation) {
+            return "{}".into();
+        }
+        let session = self.rpc_session.lock().expect("rpc state poisoned").clone();
+        let Some(session) = session else {
+            return "{}".into();
+        };
+        let state = self.goal_state.lock().expect("goal state poisoned");
+        let Some(stamp) = state
+            .active_stamp()
+            .filter(|stamp| stamp.generation == generation as u64)
+        else {
+            return "{}".into();
+        };
+        let params = serde_json::json!({
+            "textDocument": {"uri": stamp.uri},
+            "position": stamp.position
+        });
+        serde_json::json!({
+            "textDocument": {"uri": stamp.uri},
+            "position": stamp.position,
+            "sessionId": session,
+            "method": "Lean.Widget.getInteractiveGoals",
+            "params": params
+        })
+        .to_string()
+    }
+
+    fn rpc_keepalive_request(&self) -> String {
+        let session = self.rpc_session.lock().expect("rpc state poisoned").clone();
+        let Some(session) = session else {
+            return "{}".into();
+        };
+        let uri = self
+            .current_uri
+            .lock()
+            .expect("navigation state poisoned")
+            .clone();
+        eprintln!("LEAN4_HX_RPC action=keepAlive");
+        serde_json::json!({"uri": uri, "sessionId": session}).to_string()
+    }
+
+    fn rpc_release_request(&self) -> String {
+        let session = self.rpc_session.lock().expect("rpc state poisoned").clone();
+        let Some(session) = session else {
+            return "{}".into();
+        };
+        let uri = self
+            .current_uri
+            .lock()
+            .expect("navigation state poisoned")
+            .clone();
+        let refs = self.rpc_refs.lock().expect("rpc state poisoned").clone();
+        eprintln!("LEAN4_HX_RPC action=release refs={}", refs.len());
+        self.clear_rpc_session();
+        serde_json::json!({"uri": uri, "sessionId": session, "refs": refs}).to_string()
     }
 
     fn plain_goal(value: &Value) -> Option<PlainGoal> {
@@ -766,6 +881,22 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-styled-lines", NativeState::styled_lines)
         .register_fn("native-rpc-goals-request", NativeState::rpc_goals_request)
         .register_fn(
+            "native-rpc-session-current?",
+            NativeState::rpc_session_current,
+        )
+        .register_fn(
+            "native-rpc-session-goals-request",
+            NativeState::rpc_session_goals_request,
+        )
+        .register_fn(
+            "native-rpc-keepalive-request",
+            NativeState::rpc_keepalive_request,
+        )
+        .register_fn(
+            "native-rpc-release-request",
+            NativeState::rpc_release_request,
+        )
+        .register_fn(
             "native-generation-current?",
             NativeState::generation_current,
         )
@@ -863,5 +994,27 @@ mod tests {
             assert!(request.contains(&format!("\"sessionId\":{session}")));
             assert!(request.contains("Lean.Widget.getInteractiveGoals"));
         }
+    }
+
+    #[test]
+    fn rpc_session_lifecycle_collects_refs_and_rejects_errors() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+
+        state.record_rpc(generation, r#"{"sessionId":17}"#.into());
+        assert!(state.rpc_session_current(generation));
+        state.record_rpc(generation, r#"{"goals":[],"nested":{"p":1}}"#.into());
+
+        let release: Value =
+            serde_json::from_str(&state.rpc_release_request()).expect("release request JSON");
+        assert_eq!(release.get("sessionId"), Some(&serde_json::json!(17)));
+        assert_eq!(release["refs"].as_array().map(Vec::len), Some(1));
+        assert!(!state.rpc_session_current(generation));
+
+        state.record_rpc(generation, r#"{"sessionId":"new"}"#.into());
+        assert!(state.rpc_session_current(generation));
+        state.record_rpc(generation, r#"{"error":{"code":-32600}}"#.into());
+        assert!(!state.rpc_session_current(generation));
     }
 }
