@@ -24,6 +24,7 @@
 (define lean4-hx-native (native-state))
 (define lean4-hx-component #f)
 (define lean4-hx-installed? #f)
+(define lean4-hx-hooks-installed? #f)
 (define lean4-hx-selection-pending? #f)
 
 (define (lean4-hx-expand-unicode!)
@@ -54,18 +55,15 @@
 (define (lean4-hx-status prefix)
   (hx.set-status! (string-append prefix ": " (lean4-hx-summary))))
 
-(define (lean4-hx-on-selection view)
-  (native-record-selection! lean4-hx-native)
-  ;; Cancel immediately; the delayed callback reads the latest cursor.
-  (if (native-active? lean4-hx-native)
-      (native-cancel-request! lean4-hx-native)
-      #f)
+(define (lean4-hx-schedule-refresh!)
+  ;; Coalesce open, edit, and selection events.  The callback is guarded by
+  ;; native-active? so a close/remove cannot resurrect a request.
   (if (and (native-active? lean4-hx-native)
            (not lean4-hx-selection-pending?))
       (begin
         (set! lean4-hx-selection-pending? #t)
         (hx.enqueue-thread-local-callback-with-delay
-         250
+         500
          (lambda ()
            (set! lean4-hx-selection-pending? #f)
            (if (native-active? lean4-hx-native)
@@ -73,11 +71,20 @@
                  (native-cancel-request! lean4-hx-native)
                  (lean4-hx-request-lean-info!))
                #f))))
+      #f))
+
+(define (lean4-hx-on-selection view)
+  (native-record-selection! lean4-hx-native)
+  ;; Cancel immediately; the delayed callback reads the latest cursor.
+  (if (native-active? lean4-hx-native)
+      (native-cancel-request! lean4-hx-native)
       #f)
+  (lean4-hx-schedule-refresh!)
   (lean4-hx-status "lean4.hx selection"))
 
 (define (lean4-hx-on-document-change document old-text)
-  (native-record-document-change! lean4-hx-native))
+  (native-record-document-change! lean4-hx-native)
+  (lean4-hx-schedule-refresh!))
 
 (define (lean4-hx-on-insert-char char)
   (if (equal? char #\space)
@@ -85,7 +92,8 @@
       #f))
 
 (define (lean4-hx-on-open document)
-  (native-record-open! lean4-hx-native))
+  (native-record-open! lean4-hx-native)
+  (lean4-hx-schedule-refresh!))
 
 (define (lean4-hx-on-close closed-event)
   (native-record-close! lean4-hx-native))
@@ -172,16 +180,21 @@
   (if lean4-hx-installed?
       "lean4.hx already installed"
       (begin
-        ;; Hooks are generation-scoped by Helix. Removing by name also clears
-        ;; a component left behind by a previous init.scm reload.
+        ;; Removing by name also clears a component left behind by a previous
+        ;; init.scm reload. Hooks are process-scoped in Helix, so register them
+        ;; only once; otherwise remove/reinstall would duplicate callbacks.
         (hx.pop-last-component-by-name! "lean4-hx-component")
         (set! lean4-hx-selection-pending? #f)
         (native-activate! lean4-hx-native)
-        (editor.register-hook 'selection-did-change lean4-hx-on-selection)
-        (editor.register-hook 'post-insert-char lean4-hx-on-insert-char)
-        (editor.register-hook 'document-changed lean4-hx-on-document-change)
-        (editor.register-hook 'document-opened lean4-hx-on-open)
-        (editor.register-hook 'document-closed lean4-hx-on-close)
+        (if (not lean4-hx-hooks-installed?)
+            (begin
+              (editor.register-hook 'selection-did-change lean4-hx-on-selection)
+              (editor.register-hook 'post-insert-char lean4-hx-on-insert-char)
+              (editor.register-hook 'document-changed lean4-hx-on-document-change)
+              (editor.register-hook 'document-opened lean4-hx-on-open)
+              (editor.register-hook 'document-closed lean4-hx-on-close)
+              (set! lean4-hx-hooks-installed? #t))
+            #f)
         (set! lean4-hx-component
               (components.new-component! "lean4-hx-component" lean4-hx-native
                                           lean4-hx-render
