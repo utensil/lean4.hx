@@ -83,44 +83,53 @@ pty_log=$run_dir/pty.log
 cat >"$pty_script" <<EOF
 log_user 0
 log_file -a "$pty_log"
-set timeout 90
+set timeout 20
 set env(HELIX_RUNTIME) "$runtime_dir"
 set env(XDG_CONFIG_HOME) "$config_dir"
 set env(HELIX_STEEL_CONFIG) "$helix_config"
 set env(STEEL_HOME) "$steel_home"
 set env(PATH) "$elan_dir:\$env(PATH)"
+proc need {pattern} {
+    expect {
+        -exact \$pattern {}
+        timeout { puts stderr "timed out waiting for \$pattern"; exit 1 }
+        eof { puts stderr "Helix exited before \$pattern"; exit 1 }
+    }
+}
 cd "$project_dir"
 spawn "$hx_bin" Main.lean
-expect "LEAN4_HX_INSTALL"
-expect "LEAN4_HX_CALLBACK result=reply"
+need "LEAN4_HX_INSTALL active=true"
+need "LEAN4_HX_OPEN"
 send "j"
 sleep 2
-expect "LEAN4_HX_GOAL_AVAILABLE"
-send "jjlllllll"
-sleep 2
-expect "LEAN4_HX_NAVIGATION cross-file"
-send "i"
-send "X"
+need "LEAN4_HX_GOAL_RENDER_READY lines="
+need "LEAN4_HX_GOAL_AVAILABLE"
+send "\\t"
+need "LEAN4_HX_GOAL_FOCUS focused=true"
 send "\\033"
+need "LEAN4_HX_GOAL_FOCUS focused=false"
+send "i"
+send " "
+send "\\033"
+need "LEAN4_HX_DOCUMENT_CHANGED version="
 sleep 2
-send ":reload"
-send "\\r"
-sleep 3
+need "LEAN4_HX_GOAL_AVAILABLE"
 send ":lsp-restart"
 send "\\r"
-sleep 10
+sleep 5
 send ":buffer-close!"
 send "\\r"
-expect "LEAN4_HX_CLOSE"
+need "LEAN4_HX_CLOSE"
 send ":open Main.lean"
 send "\\r"
-sleep 1
-send "\\r"
-expect "LEAN4_HX_OPEN"
-expect "LEAN4_HX_CALLBACK result=reply"
+sleep 2
+need "LEAN4_HX_OPEN"
+send "j"
+sleep 2
+need "LEAN4_HX_GOAL_AVAILABLE"
 send ":lean4-hx-remove-component!"
 send "\\r"
-expect "LEAN4_HX_REMOVE active=false"
+need "LEAN4_HX_REMOVE active=false"
 send ":quit!"
 send "\\r"
 expect eof
@@ -134,14 +143,14 @@ fi
 for marker in \
     'LEAN4_HX_INSTALL active=true' \
     'LEAN4_HX_OPEN' \
-    'LEAN4_HX_INSERT' \
+    'LEAN4_HX_DOCUMENT_CHANGED version=' \
     'LEAN4_HX_CLOSE' \
-    'LEAN4_HX_REQUEST line=0 character=0 uri=file://' \
+    'LEAN4_HX_REQUEST line=' \
     'LEAN4_HX_CALLBACK result=reply' \
-    'LEAN4_HX_RPC action=connect' \
-    'LEAN4_HX_EDIT_APPLIED' \
-    'LEAN4_HX_NAVIGATION unavailable' \
+    'LEAN4_HX_GOAL_RENDER_READY lines=' \
     'LEAN4_HX_GOAL_AVAILABLE' \
+    'LEAN4_HX_GOAL_FOCUS focused=true' \
+    'LEAN4_HX_GOAL_FOCUS focused=false' \
     'LEAN4_HX_REMOVE active=false'; do
     grep -F "$marker" "$pty_log" >/dev/null || {
         echo "missing PTY marker: $marker; preserved evidence at $run_dir" >&2
