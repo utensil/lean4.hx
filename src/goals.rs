@@ -63,6 +63,25 @@ impl GoalSnapshot {
         }
         text
     }
+
+    /// Lines for the native component. Keep layout out of Scheme so the same
+    /// snapshot is rendered by the host and any future fallback transport.
+    pub fn display_lines(&self) -> Vec<String> {
+        if let Some(reason) = &self.unavailable {
+            return vec![format!("Lean goal unavailable: {reason}")];
+        }
+        let mut lines = Vec::new();
+        for line in self.rendered.lines() {
+            lines.push(line.to_owned());
+        }
+        if lines.is_empty() {
+            lines.push("Lean goal has no rendered text".to_owned());
+        }
+        if let Some(term) = &self.term_goal {
+            lines.push(format!("term: {term}"));
+        }
+        lines
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +143,11 @@ impl GoalState {
             self.snapshot = Some(GoalSnapshot::unavailable(active, reason));
             self.active = None;
         }
+    }
+
+    pub fn invalidate_and_advance(&mut self, reason: impl Into<String>) {
+        self.next_generation = self.next_generation.saturating_add(1);
+        self.invalidate(reason);
     }
 
     pub fn close(&mut self) {
