@@ -94,6 +94,7 @@ need "LEAN4_HX_REQUEST line="
 send "j"
 sleep 2
 need "LEAN4_HX_GOAL_AVAILABLE"
+need "LEAN4_HX_TAGGED_RENDER_READY"
 send "\\t"
 need "LEAN4_HX_GOAL_FOCUS focused=true"
 send "n"
@@ -144,6 +145,7 @@ for marker in \
     'LEAN4_HX_CALLBACK result=reply' \
     'LEAN4_HX_GOAL_RENDER_READY lines=' \
     'LEAN4_HX_GOAL_AVAILABLE' \
+    'LEAN4_HX_TAGGED_RENDER_READY' \
     'LEAN4_HX_GOAL_FOCUS focused=true' \
     'LEAN4_HX_GOAL_FOCUS focused=false' \
     'LEAN4_HX_GOAL_SELECTED index=' \
@@ -153,7 +155,7 @@ for marker in \
         exit 1
     }
 done
-if grep -E 'BadSyntax|Sync job failed|panicked at|thread .* panicked' "$pty_log" >/dev/null; then
+if grep -E 'error\[E[0-9]+\]|BadSyntax|Sync job failed|panicked at|thread .* panicked' "$pty_log" >/dev/null; then
     echo "PTY log contains a host failure; preserved evidence at $run_dir" >&2
     exit 1
 fi

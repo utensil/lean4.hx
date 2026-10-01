@@ -2,6 +2,8 @@
 
 use crate::protocol::{Extras, Location, TaggedText};
 use serde_json::Value;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StyledSpan {
@@ -24,17 +26,63 @@ pub struct TerminalSpan {
     pub style: TerminalStyle,
 }
 
+/// Wrap by terminal cells, preserving grapheme clusters and style boundaries.
+pub fn layout_lines(lines: &[Vec<TerminalSpan>], width: usize) -> Vec<Vec<Value>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for line in lines {
+        let mut row = Vec::new();
+        let mut column = 0;
+        for span in line {
+            let style = match span.style {
+                TerminalStyle::Plain => "plain",
+                TerminalStyle::Keyword => "keyword",
+                TerminalStyle::Type => "type",
+                TerminalStyle::Goal => "goal",
+                TerminalStyle::Error => "error",
+            };
+            for cluster in span.text.graphemes(true) {
+                if cluster == "\n" || cluster == "\r\n" {
+                    out.push(std::mem::take(&mut row));
+                    column = 0;
+                    continue;
+                }
+                let text = if cluster == "\t" { "    " } else { cluster };
+                let cells = UnicodeWidthStr::width(text);
+                if column + cells > width {
+                    out.push(std::mem::take(&mut row));
+                    column = 0;
+                }
+                if cells <= width {
+                    row.push(serde_json::json!({"column":column,"text":text,"style":style}));
+                    column += cells;
+                }
+            }
+        }
+        out.push(row);
+    }
+    out
+}
+
 fn style_for_tags(tags: &[Value]) -> TerminalStyle {
     for tag in tags.iter().rev() {
-        let Some(kind) = tag.get("kind").and_then(Value::as_str) else {
-            continue;
-        };
-        match kind {
-            "keyword" | "tactic" => return TerminalStyle::Keyword,
-            "type" | "typename" => return TerminalStyle::Type,
-            "goal" | "target" => return TerminalStyle::Goal,
-            "error" => return TerminalStyle::Error,
-            _ => {}
+        if let Some(kind) = tag.get("kind").and_then(Value::as_str) {
+            match kind {
+                "keyword" | "tactic" => return TerminalStyle::Keyword,
+                "type" | "typename" => return TerminalStyle::Type,
+                "goal" | "target" => return TerminalStyle::Goal,
+                "error" => return TerminalStyle::Error,
+                _ => {}
+            }
+        }
+        // Lean.Widget.getInteractiveGoals uses opaque info and subexpression
+        // positions as its tag payload rather than a display-oriented kind.
+        // Preserve that semantic boundary by giving tagged terms the type
+        // style while leaving untagged punctuation plain.
+        if tag.get("subexprPos").is_some() || tag.get("info").is_some() {
+            return TerminalStyle::Type;
         }
     }
     TerminalStyle::Plain

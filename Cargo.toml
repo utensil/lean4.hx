@@ -15,6 +15,8 @@ steel-core = { git = "https://github.com/utensil/steel.git", rev = "24cd21598c09
 abi_stable = "0.11.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+unicode-width = "0.2"
+unicode-segmentation = "1.12"
 
 [workspace]
 resolver = "2"
