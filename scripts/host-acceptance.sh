@@ -89,9 +89,10 @@ cd "$project_dir"
 spawn "$hx_bin" Main.lean
 need "LEAN4_HX_INSTALL active=true"
 need "LEAN4_HX_OPEN"
+sleep 2
+need "LEAN4_HX_REQUEST line="
 send "j"
 sleep 2
-need "LEAN4_HX_GOAL_RENDER_READY lines="
 need "LEAN4_HX_GOAL_AVAILABLE"
 send "\\t"
 need "LEAN4_HX_GOAL_FOCUS focused=true"
@@ -111,8 +112,9 @@ send "\\r"
 need "LEAN4_HX_CLOSE"
 send ":open Main.lean"
 send "\\r"
-sleep 2
 need "LEAN4_HX_OPEN"
+sleep 2
+need "LEAN4_HX_REQUEST line="
 send "j"
 sleep 2
 need "LEAN4_HX_GOAL_AVAILABLE"
