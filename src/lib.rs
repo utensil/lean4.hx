@@ -406,8 +406,14 @@ impl NativeState {
 
     fn unicode_replacement(&self, line: String, cursor_utf16: usize) -> String {
         unicode::edit_at_cursor(&line, cursor_utf16)
-            .map(|edit| edit.replacement.to_owned())
+            .map(|edit| edit.replacement)
             .unwrap_or_default()
+    }
+
+    fn unicode_cursor(&self, line: String, cursor_utf16: usize) -> usize {
+        unicode::edit_at_cursor(&line, cursor_utf16)
+            .map(|edit| edit.cursor_chars)
+            .unwrap_or(0)
     }
 }
 
@@ -479,6 +485,7 @@ pub fn build_module() -> FFIModule {
             "native-unicode-replacement",
             NativeState::unicode_replacement,
         )
+        .register_fn("native-unicode-cursor", NativeState::unicode_cursor)
         .register_fn("native-file-uri", file_uri);
     module
 }

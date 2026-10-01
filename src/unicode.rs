@@ -1,15 +1,45 @@
-//! Cursor-aware Lean Unicode abbreviations.
+//! Cursor-aware Lean Unicode input.
+//!
+//! The abbreviation corpus is data-driven so the editor does not silently
+//! implement a small, divergent subset of Lean input. Templates use the
+//! $CURSOR marker for paired delimiters and other insertions that leave the
+//! cursor inside the replacement.
+
+use std::{collections::BTreeMap, sync::OnceLock};
+
+const ABBREVIATIONS: &str = include_str!("unicode-abbreviations.json");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnicodeEdit {
     pub start_chars: usize,
     pub end_chars: usize,
-    pub replacement: &'static str,
+    pub replacement: String,
+    pub cursor_chars: usize,
+}
+
+fn abbreviations() -> &'static BTreeMap<String, String> {
+    static TABLE: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        serde_json::from_str(ABBREVIATIONS)
+            .expect("bundled Lean Unicode abbreviation data must be valid JSON")
+    })
+}
+
+fn expand_template(template: &str) -> (String, usize) {
+    if let Some(marker) = template.find("$CURSOR") {
+        let prefix = &template[..marker];
+        let suffix = &template[marker + "$CURSOR".len()..];
+        (format!("{prefix}{suffix}"), prefix.chars().count())
+    } else {
+        let replacement = template.to_owned();
+        let cursor = replacement.chars().count();
+        (replacement, cursor)
+    }
 }
 
 /// Find a supported Lean abbreviation immediately before a UTF-16 cursor.
-/// The returned offsets are Unicode scalar offsets within `line`, which match
-/// Helix's rope character ranges and avoid splitting a multi-byte character.
+/// Returned offsets are Unicode scalar offsets within `line`, matching
+/// Helix's rope character ranges and avoiding split code points.
 pub fn edit_at_cursor(line: &str, cursor_utf16: usize) -> Option<UnicodeEdit> {
     let mut utf16 = 0usize;
     let mut cursor_chars = 0usize;
@@ -36,29 +66,14 @@ pub fn edit_at_cursor(line: &str, cursor_utf16: usize) -> Option<UnicodeEdit> {
         .find(|(_, ch)| ch.is_whitespace())
         .map_or(0, |(index, ch)| index + ch.len_utf8());
     let token = &before_cursor[token_start..token_end];
-    let replacement = match token {
-        r"\alpha" => "α",
-        r"\beta" => "β",
-        r"\gamma" => "γ",
-        r"\delta" => "δ",
-        r"\epsilon" => "ε",
-        r"\lambda" | r"\lam" => "λ",
-        r"\forall" => "∀",
-        r"\exists" => "∃",
-        r"\to" | r"\rightarrow" => "→",
-        r"\mapsto" => "↦",
-        r"\in" => "∈",
-        r"\notin" => "∉",
-        r"\ne" => "≠",
-        r"\le" => "≤",
-        r"\ge" => "≥",
-        r"\times" => "×",
-        _ => return None,
-    };
+    let key = token.strip_prefix('\\')?;
+    let template = abbreviations().get(key)?;
+    let (replacement, cursor_chars_in_replacement) = expand_template(template);
     Some(UnicodeEdit {
-        start_chars: line[..token_start].chars().count(),
-        end_chars: line[..token_end].chars().count(),
+        start_chars: before_cursor[..token_start].chars().count(),
+        end_chars: before_cursor[..token_end].chars().count(),
         replacement,
+        cursor_chars: cursor_chars_in_replacement,
     })
 }
 
@@ -67,15 +82,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn loads_the_full_data_driven_corpus() {
+        assert!(abbreviations().len() > 1_000);
+        assert_eq!(abbreviations().get("alpha"), Some(&"α".to_owned()));
+        assert_eq!(abbreviations().get("to"), Some(&"→".to_owned()));
+    }
+
+    #[test]
     fn expands_ascii_abbreviation_before_trailing_space() {
         assert_eq!(
             edit_at_cursor(r"x \alpha ", 9),
             Some(UnicodeEdit {
                 start_chars: 2,
                 end_chars: 8,
-                replacement: "α",
+                replacement: "α".into(),
+                cursor_chars: 1,
             })
         );
+    }
+
+    #[test]
+    fn expands_pair_and_leaves_cursor_inside() {
+        let edit = edit_at_cursor(r"\<> ", 4).unwrap();
+        assert_eq!(edit.replacement, "⟨⟩");
+        assert_eq!(edit.cursor_chars, 1);
     }
 
     #[test]

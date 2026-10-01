@@ -12,7 +12,7 @@
            native-record-navigation! native-begin-request! native-cancel-request!
            native-record-rpc! native-label native-lines native-summary native-file-uri
            native-set-focused! native-scroll! native-unicode-start native-unicode-end
-           native-unicode-replacement))
+           native-unicode-replacement native-unicode-cursor))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -38,13 +38,21 @@
                [cursor (static.get-current-line-character "utf-16")]
                [start (native-unicode-start lean4-hx-native line cursor)]
                [end (native-unicode-end lean4-hx-native line cursor)]
-               [replacement (native-unicode-replacement lean4-hx-native line cursor)])
+               [replacement (native-unicode-replacement lean4-hx-native line cursor)]
+               [cursor-offset (native-unicode-cursor lean4-hx-native line cursor)])
           (if (and (> end start) (not (string=? replacement "")))
               (let ([line-start (text.rope-line->char rope line-number)])
                 (static.set-current-selection-object!
                  (static.range->selection
                   (static.range (+ line-start start) (+ line-start end))))
                 (static.replace-selection-with replacement)
+                ;; Paired abbreviations carry a cursor marker. Re-read the
+                ;; line start after replacement and collapse the selection at
+                ;; that marker instead of leaving the cursor after the pair.
+                (static.set-current-selection-object!
+                 (static.range->selection
+                  (static.range (+ line-start start cursor-offset)
+                                (+ line-start start cursor-offset))))
                 (lean4-hx-status "lean4.hx unicode"))
               #f))
         #f)))
