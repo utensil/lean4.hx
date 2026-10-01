@@ -6,10 +6,11 @@
 (require-builtin helix/components as components.)
 (#%require-dylib "liblean4_hx"
   (only-in native-state native-activate! native-deactivate! native-active?
-           native-record-selection! native-record-insert! native-record-open!
+           native-record-selection! native-record-document-change! native-record-open!
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
-           native-record-rpc! native-label native-summary native-file-uri))
+           native-record-rpc! native-label native-lines native-summary native-file-uri
+           native-set-focused! native-scroll!))
 
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
@@ -31,6 +32,10 @@
 
 (define (lean4-hx-on-selection view)
   (native-record-selection! lean4-hx-native)
+  ;; Cancel immediately; the delayed callback reads the latest cursor.
+  (if (native-active? lean4-hx-native)
+      (native-cancel-request! lean4-hx-native)
+      #f)
   (if (and (native-active? lean4-hx-native)
            (not lean4-hx-selection-pending?))
       (begin
@@ -47,8 +52,8 @@
       #f)
   (lean4-hx-status "lean4.hx selection"))
 
-(define (lean4-hx-on-insert character)
-  (native-record-insert! lean4-hx-native))
+(define (lean4-hx-on-document-change document old-text)
+  (native-record-document-change! lean4-hx-native))
 
 (define (lean4-hx-on-open document)
   (native-record-open! lean4-hx-native))
@@ -104,14 +109,35 @@
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
 
 (define (lean4-hx-render state area frame)
-  (components.frame-set-string! frame
-                               (components.area-x area)
-                               (components.area-y area)
-                               (native-label state)
-                               (components.style)))
+  (let ([row (components.area-y area)]
+        [last-row (+ (components.area-y area) (components.area-height area))])
+    (for-each
+     (lambda (line)
+       (if (< row last-row)
+           (components.frame-set-string! frame
+                                         (components.area-x area)
+                                         row
+                                         line
+                                         (components.style)))
+       (set! row (+ row 1)))
+     (native-lines state))))
 
 (define (lean4-hx-handle-event state event)
-  components.event-result/ignore)
+  (cond
+   [(components.key-event-tab? event)
+    (native-set-focused! state #t)
+    components.event-result/consume]
+   [(components.key-event-escape? event)
+    (native-set-focused! state #f)
+    ;; Let Helix also process Escape so insert mode returns to normal mode.
+    components.event-result/ignore]
+   [(components.key-event-page-down? event)
+    (native-scroll! state 1)
+    components.event-result/consume]
+   [(components.key-event-page-up? event)
+    (native-scroll! state -1)
+    components.event-result/consume]
+   [else components.event-result/ignore]))
 
 (define (lean4-hx-install!)
   (if lean4-hx-installed?
@@ -123,7 +149,7 @@
         (set! lean4-hx-selection-pending? #f)
         (native-activate! lean4-hx-native)
         (editor.register-hook 'selection-did-change lean4-hx-on-selection)
-        (editor.register-hook 'post-insert-char lean4-hx-on-insert)
+        (editor.register-hook 'document-changed lean4-hx-on-document-change)
         (editor.register-hook 'document-opened lean4-hx-on-open)
         (editor.register-hook 'document-closed lean4-hx-on-close)
         (set! lean4-hx-component
