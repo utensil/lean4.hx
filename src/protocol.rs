@@ -240,9 +240,28 @@ impl MethodCall {
     }
 }
 
+// Steel serializes JSON coordinates as floating point numbers. Accept integral
+// values at this boundary, but reject fractions, negatives, and overflow.
+fn coordinate<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let value = Value::deserialize(d)?;
+    if let Some(n) = value.as_u64().and_then(|n| u32::try_from(n).ok()) {
+        return Ok(n);
+    }
+    match value.as_f64() {
+        Some(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 && n.fract() == 0.0 => {
+            Ok(n as u32)
+        }
+        _ => Err(de::Error::custom(
+            "coordinate must be a nonnegative integral u32",
+        )),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Position {
+    #[serde(deserialize_with = "coordinate")]
     pub line: u32,
+    #[serde(deserialize_with = "coordinate")]
     pub character: u32,
     #[serde(flatten)]
     pub extra: Extras,
@@ -566,10 +585,13 @@ mod tests {
     fn tagged_text_accepts_lean_text_object_shape() {
         let source = json!({"append":[{"text":"⊢ "},{"text":"Nat"}]});
         let text: TaggedText = serde_json::from_value(source).unwrap();
-        assert_eq!(text, TaggedText::Append(vec![
-            TaggedText::Text("⊢ ".into()),
-            TaggedText::Text("Nat".into()),
-        ]));
+        assert_eq!(
+            text,
+            TaggedText::Append(vec![
+                TaggedText::Text("⊢ ".into()),
+                TaggedText::Text("Nat".into()),
+            ])
+        );
     }
 
     #[test]
