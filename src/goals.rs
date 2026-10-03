@@ -26,6 +26,9 @@ pub struct GoalSnapshot {
     pub term_goal: Option<String>,
     pub term_range: Option<Range>,
     pub unavailable: Option<String>,
+    /// Lean returns an empty goal list after a proof is complete. Preserve
+    /// that state as content instead of confusing it with unavailable data.
+    pub completed: bool,
 }
 
 impl GoalSnapshot {
@@ -39,10 +42,12 @@ impl GoalSnapshot {
             term_goal: None,
             term_range: None,
             unavailable: Some(reason.into()),
+            completed: false,
         }
     }
 
     pub fn from_plain_goal(stamp: RequestStamp, goal: PlainGoal) -> Self {
+        let completed = goal.goals.is_empty();
         let styled_goals = goal
             .goals
             .iter()
@@ -67,6 +72,7 @@ impl GoalSnapshot {
             term_goal: None,
             term_range: None,
             unavailable: None,
+            completed,
         }
     }
 
@@ -177,6 +183,7 @@ impl GoalSnapshot {
             term_goal: None,
             term_range: None,
             unavailable: None,
+            completed: goals.is_empty(),
         })
     }
 
@@ -208,6 +215,9 @@ impl GoalSnapshot {
             return vec![format!("Lean goal unavailable: {reason}")];
         }
         let mut lines = Vec::new();
+        if self.completed {
+            lines.push("🎉 Goal complete".to_owned());
+        }
         for line in self.rendered.lines() {
             lines.push(line.to_owned());
         }
@@ -221,6 +231,13 @@ impl GoalSnapshot {
     }
 
     pub fn styled_lines(&self, selected: usize) -> Vec<Vec<TerminalSpan>> {
+        if self.completed {
+            return vec![vec![TerminalSpan {
+                text: "🎉 Goal complete".to_owned(),
+                style: TerminalStyle::Goal,
+                tags: Vec::new(),
+            }]];
+        }
         self.styled_goals
             .get(selected.min(self.styled_goals.len().saturating_sub(1)))
             .cloned()
@@ -463,6 +480,30 @@ mod tests {
         assert!(lines[0]
             .iter()
             .any(|span| span.style == TerminalStyle::Type));
+    }
+
+    #[test]
+    fn completed_goal_renders_a_single_celebration_marker() {
+        let stamp = RequestStamp {
+            uri: "file:///Main.lean".into(),
+            version: 1,
+            position: position(),
+            generation: 1,
+        };
+        let snapshot = GoalSnapshot::from_plain_goal(
+            stamp,
+            PlainGoal {
+                rendered: String::new(),
+                goals: Vec::new(),
+                extra: Extras::new(),
+            },
+        );
+        assert!(snapshot.completed);
+        assert_eq!(snapshot.display_lines(), vec!["🎉 Goal complete"]);
+        let lines = snapshot.styled_lines(0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].text, "🎉 Goal complete");
+        assert_eq!(lines[0][0].style, TerminalStyle::Goal);
     }
 
     #[test]

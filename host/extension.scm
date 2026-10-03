@@ -15,7 +15,7 @@
            native-generation native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
            native-rpc-term-goal-request native-record-rpc-action!
            native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-info-lines native-summary native-file-uri
-           native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
+           native-goal-line-count native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
            native-navigation-target native-navigation-path native-navigation-uri native-navigation-start-line
@@ -29,6 +29,8 @@
 (provide lean4-hx-code-action!)
 (provide lean4-hx-summary)
 (provide lean4-hx-native)
+(provide lean4-hx-set-layout!)
+(provide lean4-hx-set-leader!)
 
 ;; The value is opaque to Scheme. All counters and lifecycle state are Rust-owned.
 (define lean4-hx-native (native-state))
@@ -41,6 +43,29 @@
 (define lean4-hx-panel-width 36)
 (define lean4-hx-goal-area #f)
 (define lean4-hx-info-area #f)
+(define lean4-hx-layout-mode "split")
+(define lean4-hx-leader-label "Space l")
+(define lean4-hx-leader-key #\l)
+(define lean4-hx-prefix-pending? #f)
+(define lean4-hx-leader-pending? #f)
+(define lean4-hx-help-visible? #f)
+(define lean4-hx-selection-start #f)
+(define lean4-hx-selection-end #f)
+
+(define (lean4-hx-set-layout! mode)
+  (if (or (equal? mode "split") (equal? mode "adaptive"))
+      (begin
+        (set! lean4-hx-layout-mode mode)
+        mode)
+      "lean4.hx: layout must be split or adaptive"))
+
+(define (lean4-hx-set-leader! label key)
+  (if (and (string? label) (char? key))
+      (begin
+        (set! lean4-hx-leader-label label)
+        (set! lean4-hx-leader-key key)
+        label)
+      "lean4.hx: leader requires a label string and key character"))
 
 ;; Dynamic components are compositor layers, so Helix gives them the full
 ;; terminal rectangle. Reserve a right editor strip before rendering the
@@ -403,28 +428,84 @@
     (for-each
      (lambda (line)
        (if (< row last-row)
-           (for-each
-            (lambda (span)
-              (let* ([style-name (hash-ref span 'style)]
-                     [style (cond
-                             [(string=? style-name "goal")
-                              (components.style-fg
-                               (components.style-with-bold (components.style))
-                               components.Color/Blue)]
-                             [(string=? style-name "type")
-                              (components.style-fg (components.style) components.Color/Cyan)]
-                             [(string=? style-name "keyword")
-                              (components.style-fg (components.style) components.Color/Yellow)]
-                             [(string=? style-name "error")
-                              (components.style-fg (components.style) components.Color/Red)]
-                             [else (components.style)])])
-                (components.frame-set-string!
-                 frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
-                 row (hash-ref span 'text) style)))
-            line)
+           (let ([selected? (and lean4-hx-selection-start
+                                 lean4-hx-selection-end
+                                 (<= (min lean4-hx-selection-start lean4-hx-selection-end) row)
+                                 (<= row (max lean4-hx-selection-start lean4-hx-selection-end)))])
+             (for-each
+              (lambda (span)
+                (let* ([style-name (hash-ref span 'style)]
+                       [style (cond
+                               [(string=? style-name "goal")
+                                (components.style-fg
+                                 (components.style-with-bold (components.style))
+                                 components.Color/Blue)]
+                               [(string=? style-name "type")
+                                (components.style-fg (components.style) components.Color/Cyan)]
+                               [(string=? style-name "keyword")
+                                (components.style-fg (components.style) components.Color/Yellow)]
+                               [(string=? style-name "error")
+                                (components.style-fg (components.style) components.Color/Red)]
+                               [else (components.style)])]
+                       [style (if selected?
+                                  (components.style-with-reversed style)
+                                  style)])
+                  (components.frame-set-string!
+                   frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
+                   row (hash-ref span 'text) style)))
+              line))
            #f)
       (set! row (+ row 1)))
      styled)))
+
+(define (lean4-hx-render-panel-text! frame panel row text style)
+  (if (< row (components.area-height panel))
+      (components.frame-set-string!
+       frame
+       (+ (components.area-x panel) 1)
+       (+ (components.area-y panel) row)
+       text
+       style)
+      #f))
+
+(define (lean4-hx-render-help! frame panel)
+  (let ([style (components.style-with-dim
+                (components.style-fg (components.style) components.Color/Gray))])
+    (lean4-hx-render-panel-text! frame panel 0 "Lean panel help" (components.style-with-bold style))
+    (lean4-hx-render-panel-text! frame panel 2
+                                 (string-append lean4-hx-leader-label " ?  help") style)
+    (lean4-hx-render-panel-text! frame panel 3
+                                 (string-append lean4-hx-leader-label " g  go to tagged target") style)
+    (lean4-hx-render-panel-text! frame panel 4
+                                 (string-append lean4-hx-leader-label " n/p  next/previous goal") style)
+    (lean4-hx-render-panel-text! frame panel 5
+                                 (string-append lean4-hx-leader-label " t  term goal") style)
+    (lean4-hx-render-panel-text! frame panel 6
+                                 (string-append lean4-hx-leader-label " a  adaptive layout") style)
+    (lean4-hx-render-panel-text! frame panel 7
+                                 (string-append lean4-hx-leader-label " y  report selected rows") style)
+    (lean4-hx-render-panel-text! frame panel 8 "Esc  close help" style)))
+
+(define (lean4-hx-report-selection!)
+  (if (and lean4-hx-selection-start lean4-hx-selection-end)
+      (hx.set-status!
+       (string-append
+        "lean4.hx selected "
+        (number->string
+         (+ 1 (- (max lean4-hx-selection-start lean4-hx-selection-end)
+                 (min lean4-hx-selection-start lean4-hx-selection-end))))
+        " panel rows"))
+      (hx.set-status! "lean4.hx: no panel selection")))
+
+(define (lean4-hx-render-footer! frame panel)
+  (let ([style (components.style-with-dim
+                (components.style-fg (components.style) components.Color/Gray))]
+        [row (- (components.area-height panel) 1)])
+    (if (native-focused? lean4-hx-native)
+        (lean4-hx-render-panel-text!
+         frame panel row
+         (string-append "For help, use " lean4-hx-leader-label " ?") style)
+        #f)))
 
 (define (lean4-hx-render state area frame)
   (let* ([width (min lean4-hx-panel-width (components.area-width area))]
@@ -434,8 +515,20 @@
                                  (components.area-y area)
                                  width
                                  (components.area-height area))]
-         [info-height (if (> (components.area-height panel) 10) 6 0)]
-         [goal-height (- (components.area-height panel) info-height)]
+         [footer-height (if (native-focused? state) 1 0)]
+         [content-height (max 0 (- (components.area-height panel) footer-height))]
+         [goal-lines (native-goal-line-count state (components.area-width panel))]
+         [info-lines (string->jsexpr (native-info-lines state (components.area-width panel)))]
+         [half-height (quotient (+ content-height 1) 2)]
+         [adaptive? (equal? lean4-hx-layout-mode "adaptive")]
+         [goal-height (cond
+                       [(= content-height 0) 0]
+                       [(and adaptive? (= (length info-lines) 0)) content-height]
+                       [(and adaptive? (> goal-lines half-height))
+                        (min content-height
+                             (max half-height (quotient (* content-height 2) 3)))]
+                       [else half-height])]
+         [info-height (- content-height goal-height)]
          [goal-panel (components.area left
                                       (components.area-y panel)
                                       width
@@ -449,14 +542,23 @@
     (set! lean4-hx-goal-area goal-panel)
     (set! lean4-hx-info-area info-panel)
     (components.buffer/clear-with frame panel (components.style))
-    (lean4-hx-render-lines
-     frame goal-panel
-     (string->jsexpr (native-styled-lines state (components.area-width goal-panel))))
-    (if (> info-height 0)
-        (lean4-hx-render-lines
-         frame info-panel
-         (string->jsexpr (native-info-lines state (components.area-width info-panel))))
-        #f)))
+    (if lean4-hx-help-visible?
+        (lean4-hx-render-help! frame panel)
+        (begin
+          (if (> goal-height 0)
+              (lean4-hx-render-lines
+               frame goal-panel
+               (string->jsexpr (native-styled-lines state (components.area-width goal-panel))))
+              #f)
+          (if (> info-height 0)
+              (lean4-hx-render-lines
+               frame info-panel
+               (string->jsexpr (native-info-lines state (components.area-width info-panel))))
+              #f)))
+    (if (> footer-height 0)
+        (lean4-hx-render-footer! frame panel)
+        #f)
+    #f))
 
 (define (lean4-hx-handle-event state event)
   (cond
@@ -467,6 +569,13 @@
                   (components.mouse-event-within-area? event lean4-hx-info-area))))
     (native-set-focused! state #t)
     (cond
+     [(= (components.event-mouse-kind event) 0)
+      (set! lean4-hx-selection-start (components.event-mouse-row event))
+      (set! lean4-hx-selection-end (components.event-mouse-row event))]
+     [(= (components.event-mouse-kind event) 6)
+      (set! lean4-hx-selection-end (components.event-mouse-row event))]
+     [(= (components.event-mouse-kind event) 3)
+      (set! lean4-hx-selection-end (components.event-mouse-row event))]
      [(= (components.event-mouse-kind event) 10)
       (native-scroll! state 1)]
      [(= (components.event-mouse-kind event) 11)
@@ -477,10 +586,80 @@
     (native-set-focused! state #t)
     components.event-result/consume]
    [(components.key-event-escape? event)
-    (native-set-focused! state #f)
-    ;; Let Helix also process Escape so insert mode returns to normal mode.
-    components.event-result/ignore]
+    (if lean4-hx-help-visible?
+        (begin
+          (set! lean4-hx-help-visible? #f)
+          components.event-result/consume)
+        (begin
+          (native-set-focused! state #f)
+          (set! lean4-hx-prefix-pending? #f)
+          (set! lean4-hx-leader-pending? #f)
+          (set! lean4-hx-selection-start #f)
+          (set! lean4-hx-selection-end #f)
+          ;; Let Helix also process Escape so insert mode returns to normal mode.
+          components.event-result/ignore))]
    [(not (native-focused? state)) components.event-result/ignore]
+   [(components.key-event-char event)
+    (let ([char (components.key-event-char event)])
+      (cond
+       [(and lean4-hx-leader-pending? (equal? char #\?))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (set! lean4-hx-help-visible? #t)
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\g))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (lean4-hx-apply-navigation!)
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\n))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (native-next-goal! state)
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\p))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (native-previous-goal! state)
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\t))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (lean4-hx-request-term-goal!)
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\a))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (if (equal? lean4-hx-layout-mode "split")
+            (set! lean4-hx-layout-mode "adaptive")
+            (set! lean4-hx-layout-mode "split"))
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\y))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (lean4-hx-report-selection!)
+        components.event-result/consume]
+       [(and lean4-hx-prefix-pending? (equal? char lean4-hx-leader-key))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #t)
+        components.event-result/consume]
+       [(equal? char #\space)
+        (set! lean4-hx-prefix-pending? #t)
+        (set! lean4-hx-leader-pending? #f)
+        components.event-result/consume]
+       [(equal? char #\g)
+        (lean4-hx-apply-navigation!)
+        components.event-result/consume]
+       [(equal? char #\n)
+        (native-next-goal! state)
+        components.event-result/consume]
+       [(equal? char #\p)
+        (native-previous-goal! state)
+        components.event-result/consume]
+       [(equal? char #\t)
+        (lean4-hx-request-term-goal!)
+        components.event-result/consume]
+       [else components.event-result/ignore]))]
    [(components.key-event-page-down? event)
     (native-scroll! state 1)
     components.event-result/consume]

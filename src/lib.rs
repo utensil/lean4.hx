@@ -866,7 +866,10 @@ impl NativeState {
             .cloned();
         let body = snapshot
             .as_ref()
-            .filter(|snapshot| snapshot.unavailable.is_none() && !snapshot.styled_goals.is_empty())
+            .filter(|snapshot| {
+                snapshot.unavailable.is_none()
+                    && (snapshot.completed || !snapshot.styled_goals.is_empty())
+            })
             .map(|snapshot| {
                 let selected = self.selected_goal.load(Ordering::Acquire);
                 snapshot.styled_lines(selected)
@@ -882,6 +885,26 @@ impl NativeState {
             .min(lines.len().saturating_sub(1));
         self.scroll.store(offset, Ordering::Release);
         serde_json::to_string(&lines.into_iter().skip(offset).collect::<Vec<_>>()).unwrap()
+    }
+
+    fn goal_line_count(&self, width: usize) -> usize {
+        let snapshot = self
+            .goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .snapshot()
+            .cloned();
+        snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                snapshot.unavailable.is_none()
+                    && (snapshot.completed || !snapshot.styled_goals.is_empty())
+            })
+            .map(|snapshot| {
+                let selected = self.selected_goal.load(Ordering::Acquire);
+                crate::correspondence::layout_lines(&snapshot.styled_lines(selected), width).len()
+            })
+            .unwrap_or(0)
     }
 
     fn info_lines(&self, width: usize) -> String {
@@ -1141,6 +1164,7 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)
         .register_fn("native-styled-lines", NativeState::styled_lines)
+        .register_fn("native-goal-line-count", NativeState::goal_line_count)
         .register_fn("native-info-lines", NativeState::info_lines)
         .register_fn("native-rpc-goals-request", NativeState::rpc_goals_request)
         .register_fn(

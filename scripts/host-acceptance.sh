@@ -48,10 +48,20 @@ cp "$repo_root/target/release/liblean4_hx.dylib" "$steel_home/native/liblean4_hx
 : >"$helix_config/helix.scm"
 : >"$steel_home/helix.scm"
 cat >"$helix_config/config.toml" <<'EOF'
+theme = "modus_vivendi"
+
 [editor]
 enable-steel = true
+
+[editor.lsp]
+display-inlay-hints = true
+inlay-hints-length-limit = 24
 EOF
 cp "$helix_config/config.toml" "$config_dir/config.toml"
+grep -F '"ui.virtual.inlay-hint"' "$runtime_dir/themes/modus_vivendi.toml" >/dev/null || {
+    echo "selected acceptance theme does not dim inlay hints" >&2
+    exit 1
+}
 cat >"$config_dir/helix/languages.toml" <<'EOF'
 [[language]]
 name = "lean"
@@ -110,6 +120,9 @@ need_both "LEAN4_HX_GOAL_AVAILABLE" "LEAN4_HX_TAGGED_RENDER_READY"
 send "j"
 send "j"
 sleep 2
+send "gg"
+send "10j"
+sleep 2
 send ":lean4-hx-code-action!"
 send "\\r"
 need "Update #guard_msgs with generated message"
@@ -120,8 +133,19 @@ send "\\r"
 sleep 1
 send "\\t"
 need "LEAN4_HX_GOAL_FOCUS focused=true"
+send " "
+send "l"
+send "?"
+sleep 1
+need "Lean panel help"
+send "\\033"
+sleep 1
+send " "
+send "l"
 send "n"
 need "LEAN4_HX_GOAL_SELECTED index="
+send " "
+send "l"
 send "p"
 need "LEAN4_HX_GOAL_SELECTED index="
 send "\\033"
