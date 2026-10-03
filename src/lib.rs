@@ -885,6 +885,70 @@ impl NativeState {
         serde_json::to_string(&lines.into_iter().skip(offset).collect::<Vec<_>>()).unwrap()
     }
 
+    /// Return the plain text represented by a wrapped panel-row range.  The
+    /// compositor owns drawing, but copying must use the same terminal-cell
+    /// layout so a soft wrap never becomes a spurious document newline.
+    fn selected_text(&self, width: usize, start: usize, end: usize) -> String {
+        let snapshot = self
+            .goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .snapshot()
+            .cloned();
+        let Some(snapshot) = snapshot else {
+            return String::new();
+        };
+        if snapshot.unavailable.is_some() {
+            return String::new();
+        }
+        let selected = self.selected_goal.load(Ordering::Acquire);
+        let rows = crate::correspondence::layout_lines(&snapshot.styled_lines(selected), width);
+        let lo = start.min(end).min(rows.len());
+        let hi = start.max(end).min(rows.len().saturating_sub(1));
+        if rows.is_empty() || lo > hi {
+            return String::new();
+        }
+        rows[lo..=hi]
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|span| span.get("text").and_then(Value::as_str))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn selected_info_text(&self, width: usize, start: usize, end: usize) -> String {
+        let info = self.cursor_info.lock().expect("cursor info poisoned").clone();
+        let body = info
+            .lines
+            .into_iter()
+            .map(|text| {
+                vec![TerminalSpan {
+                    text,
+                    style: crate::correspondence::TerminalStyle::Plain,
+                    tags: Vec::new(),
+                }]
+            })
+            .collect::<Vec<_>>();
+        let rows = crate::correspondence::layout_lines(&body, width);
+        let lo = start.min(end).min(rows.len());
+        let hi = start.max(end).min(rows.len().saturating_sub(1));
+        if rows.is_empty() || lo > hi {
+            return String::new();
+        }
+        rows[lo..=hi]
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|span| span.get("text").and_then(Value::as_str))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn goal_line_count(&self, width: usize) -> usize {
         let snapshot = self
             .goal_state
@@ -1162,6 +1226,8 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)
         .register_fn("native-styled-lines", NativeState::styled_lines)
+        .register_fn("native-selected-text", NativeState::selected_text)
+        .register_fn("native-selected-info-text", NativeState::selected_info_text)
         .register_fn("native-goal-line-count", NativeState::goal_line_count)
         .register_fn("native-info-lines", NativeState::info_lines)
         .register_fn("native-rpc-goals-request", NativeState::rpc_goals_request)
@@ -1264,6 +1330,20 @@ mod tests {
         state.record_callback(generation, "null".into());
         assert_eq!(state.styled_lines(36), "[]");
         assert!(state.lines().is_empty());
+    }
+
+    #[test]
+    fn panel_copy_uses_wrapped_rows_without_extra_newlines() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        state.record_callback(generation, "null".into());
+        state.record_hover(
+            generation,
+            r#"{"contents":"Nat : Type\nThis prose is only for explicit hover","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}}"#.into(),
+        );
+        assert_eq!(state.selected_info_text(80, 0, 0), "Nat : Type");
+        assert_eq!(state.selected_info_text(80, 1, 1), "");
     }
 
     #[test]
