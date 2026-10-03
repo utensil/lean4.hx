@@ -332,11 +332,9 @@ impl NativeState {
             let mut last = self.last_callback.lock().expect("callback state poisoned");
             *last = "reply".to_owned();
             let goal = if result == "null" {
-                self.goal_state
-                    .lock()
-                    .expect("goal state poisoned")
-                    .accept_unavailable(generation as u64, "Lean returned no goal");
-                "Lean goal unavailable".to_owned()
+                let mut state = self.goal_state.lock().expect("goal state poisoned");
+                state.accept_no_goal(generation as u64, "Lean returned no goal");
+                state.display_text()
             } else {
                 let accepted = serde_json::from_str::<Value>(&result)
                     .ok()
