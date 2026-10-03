@@ -637,6 +637,8 @@ impl NativeState {
                         let accepted = if !allow_completion && snapshot.completed {
                             state.clear_completion_candidate();
                             state.accept_unavailable(generation as u64, "Lean reported an error")
+                        } else if allow_completion && snapshot.completed {
+                            state.accept_completed(snapshot)
                         } else {
                             state.accept(snapshot)
                         };
