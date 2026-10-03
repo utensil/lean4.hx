@@ -53,6 +53,26 @@
 (define lean4-hx-selection-end #f)
 (define lean4-hx-selection-info? #f)
 
+(define (lean4-hx-clear-panel-focus!)
+  ;; The compositor receives key events before Helix's editor keymap. Clear
+  ;; panel focus whenever the editor regains ownership so source insertion can
+  ;; never be shadowed by panel shortcuts.
+  (native-set-focused! lean4-hx-native #f)
+  (set! lean4-hx-prefix-pending? #f)
+  (set! lean4-hx-leader-pending? #f)
+  (set! lean4-hx-selection-start #f)
+  (set! lean4-hx-selection-end #f)
+  (set! lean4-hx-selection-info? #f))
+
+(define (lean4-hx-on-mode-switch switch-event)
+  ;; Match lean.nvim's window-local InfoView mappings: entering source insert
+  ;; mode always returns key ownership to the editor, even if the panel had
+  ;; focus immediately before the mode switch.
+  (if (equal? (hx.mode-switch-new switch-event)
+              (editor.string->editor-mode "insert"))
+      (lean4-hx-clear-panel-focus!)
+      #f))
+
 (define (lean4-hx-set-layout! mode)
   (if (or (equal? mode "split") (equal? mode "adaptive"))
       (begin
@@ -142,6 +162,7 @@
           (native-record-open! lean4-hx-native)
           (set! lean4-hx-last-file path))
         #f))
+  (lean4-hx-clear-panel-focus!)
   (native-record-selection! lean4-hx-native)
   ;; Cancel immediately; the delayed callback reads the latest cursor.
   (if (native-active? lean4-hx-native)
@@ -150,6 +171,7 @@
   (lean4-hx-schedule-refresh!))
 
 (define (lean4-hx-on-document-change document old-text)
+  (lean4-hx-clear-panel-focus!)
   (native-record-document-change! lean4-hx-native)
   (lean4-hx-schedule-refresh!))
 
@@ -162,6 +184,7 @@
   ;; A document switch invalidates the Rust-owned cursor/session state. Release
   ;; the previous Lean RPC session before that state is replaced so switching
   ;; buffers cannot leak opaque references on the server.
+  (lean4-hx-clear-panel-focus!)
   (lean4-hx-rpc-release!)
   (native-record-open! lean4-hx-native)
   (set! lean4-hx-last-file (static.cx->current-file))
@@ -170,6 +193,7 @@
 (define (lean4-hx-on-focus-lost document)
   ;; This hook carries the document that lost focus, so release through that
   ;; document's language-server client before a new buffer becomes current.
+  (lean4-hx-clear-panel-focus!)
   (if (and lean4-hx-session-document
            (= (editor.doc-id->usize document)
               (editor.doc-id->usize lean4-hx-session-document)))
@@ -654,6 +678,11 @@
           (set! lean4-hx-selection-info? #f)
           ;; Let Helix also process Escape so insert mode returns to normal mode.
           components.event-result/ignore))]
+   [(components.mouse-event? event)
+    ;; A click outside the compositor panel returns ownership to the source
+    ;; editor before Helix handles the click.
+    (lean4-hx-clear-panel-focus!)
+    components.event-result/ignore]
    [(not (native-focused? state)) components.event-result/ignore]
    [(components.key-event-char event)
     (let ([char (components.key-event-char event)])
@@ -769,6 +798,7 @@
               (editor.register-hook 'document-opened lean4-hx-on-open)
               (editor.register-hook 'document-closed lean4-hx-on-close)
               (editor.register-hook 'document-focus-lost lean4-hx-on-focus-lost)
+              (editor.register-hook 'on-mode-switch lean4-hx-on-mode-switch)
               (editor.register-hook 'post-command lean4-hx-on-post-command)
               (set! lean4-hx-hooks-installed? #t))
             #f)
