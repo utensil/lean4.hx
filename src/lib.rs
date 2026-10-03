@@ -26,6 +26,10 @@ use crate::{
     protocol::{Extras, PlainGoal, Position},
 };
 
+const MAX_PANEL_ROWS: usize = 512;
+const MAX_INFO_LINES: usize = 64;
+const MAX_INFO_LINE_CHARS: usize = 512;
+
 macro_rules! trace {
     ($($arg:tt)*) => {
         if std::env::var_os("LEAN4_HX_TRACE").is_some() {
@@ -415,8 +419,9 @@ impl NativeState {
             info.lines.clear();
         }
         for line in lines {
-            if !info.lines.contains(&line) {
-                info.lines.push(line);
+            if !info.lines.contains(&line) && info.lines.len() < MAX_INFO_LINES {
+                info.lines
+                    .push(line.chars().take(MAX_INFO_LINE_CHARS).collect());
             }
         }
         trace!("LEAN4_HX_INFO kind={kind} result=ready lines={}", info.lines.len());
@@ -852,7 +857,10 @@ impl NativeState {
             .load(Ordering::Acquire)
             .min(body.len().saturating_sub(1));
         self.scroll.store(offset, Ordering::Release);
-        body.into_iter().skip(offset).collect()
+        body.into_iter()
+            .skip(offset)
+            .take(MAX_PANEL_ROWS)
+            .collect()
     }
 
     fn styled_lines(&self, width: usize) -> String {
@@ -882,7 +890,14 @@ impl NativeState {
             .load(Ordering::Acquire)
             .min(lines.len().saturating_sub(1));
         self.scroll.store(offset, Ordering::Release);
-        serde_json::to_string(&lines.into_iter().skip(offset).collect::<Vec<_>>()).unwrap()
+        serde_json::to_string(
+            &lines
+                .into_iter()
+                .skip(offset)
+                .take(MAX_PANEL_ROWS)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
     }
 
     /// Return the plain text represented by a wrapped panel-row range.  The
@@ -964,7 +979,9 @@ impl NativeState {
             })
             .map(|snapshot| {
                 let selected = self.selected_goal.load(Ordering::Acquire);
-                crate::correspondence::layout_lines(&snapshot.styled_lines(selected), width).len()
+                crate::correspondence::layout_lines(&snapshot.styled_lines(selected), width)
+                    .len()
+                    .min(MAX_PANEL_ROWS)
             })
             .unwrap_or(0)
     }
@@ -985,7 +1002,13 @@ impl NativeState {
                 }]
             })
             .collect::<Vec<_>>();
-        serde_json::to_string(&crate::correspondence::layout_lines(&body, width)).unwrap()
+        serde_json::to_string(
+            &crate::correspondence::layout_lines(&body, width)
+                .into_iter()
+                .take(MAX_INFO_LINES)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
     }
 
     fn generation_current(&self, generation: usize) -> bool {
@@ -1344,6 +1367,19 @@ mod tests {
         );
         assert_eq!(state.selected_info_text(80, 0, 0), "Nat : Type");
         assert_eq!(state.selected_info_text(80, 1, 1), "");
+    }
+
+    #[test]
+    fn information_surface_has_a_bounded_line_budget() {
+        let state = NativeState::new();
+        {
+            let mut info = state.cursor_info.lock().expect("cursor info poisoned");
+            info.lines = (0..(MAX_INFO_LINES + 20))
+                .map(|index| format!("line-{index}"))
+                .collect();
+        }
+        let rendered: Value = serde_json::from_str(&state.info_lines(80)).unwrap();
+        assert_eq!(rendered.as_array().map(Vec::len), Some(MAX_INFO_LINES));
     }
 
     #[test]
