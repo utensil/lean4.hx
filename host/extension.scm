@@ -14,7 +14,7 @@
            native-begin-request! native-cancel-request!
            native-generation native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
            native-rpc-term-goal-request native-record-rpc-action!
-           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-info-lines native-summary native-file-uri
+           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-info-lines native-selected-text native-selected-info-text native-summary native-file-uri
            native-goal-line-count native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
@@ -51,6 +51,7 @@
 (define lean4-hx-help-visible? #f)
 (define lean4-hx-selection-start #f)
 (define lean4-hx-selection-end #f)
+(define lean4-hx-selection-info? #f)
 
 (define (lean4-hx-set-layout! mode)
   (if (or (equal? mode "split") (equal? mode "adaptive"))
@@ -208,31 +209,33 @@
 
 (define (lean4-hx-request-term-goal!)
   (let ([generation (native-generation lean4-hx-native)])
-    (let* ([request (string->jsexpr
-                     (native-rpc-term-goal-request lean4-hx-native generation))]
-           [position (hash-ref request 'position)]
-           ;; Steel may parse JSON numbers as inexact values. Lean's RPC
-           ;; decoder requires Nat positions, so normalize both copies before
-           ;; sending the request.
-           [line (exact (hash-ref position 'line))]
-           [character (exact (hash-ref position 'character))]
-           [position (hash-insert
-                      (hash-insert position 'line line)
-                      'character character)]
-           [params (hash-ref request 'params)]
-           [params (hash-insert
-                    (hash-insert params 'position position)
-                    'textDocument (hash-ref request 'textDocument))]
-           [request (hash-insert
-                     (hash-insert request 'position position)
-                     'params params)])
-      (if (hash-contains? request 'sessionId)
-          (hx.send-lsp-command
-           "lean" "$/lean/rpc/call" request
-           (lambda (result)
-             (native-record-rpc-action! lean4-hx-native generation
-                                        (value->jsexpr-string result))))
-          (hx.set-warning! "lean4.hx: term goal unavailable")))))
+    (let ([request (string->jsexpr
+                    (native-rpc-term-goal-request lean4-hx-native generation))])
+      (if (not (hash-contains? request 'position))
+          (hx.set-status! "lean4.hx: term goal unavailable")
+          (let* ([position (hash-ref request 'position)]
+                 ;; Steel may parse JSON numbers as inexact values. Lean's RPC
+                 ;; decoder requires Nat positions, so normalize both copies
+                 ;; before sending the request.
+                 [line (exact (hash-ref position 'line))]
+                 [character (exact (hash-ref position 'character))]
+                 [position (hash-insert
+                            (hash-insert position 'line line)
+                            'character character)]
+                 [params (hash-ref request 'params)]
+                 [params (hash-insert
+                          (hash-insert params 'position position)
+                          'textDocument (hash-ref request 'textDocument))]
+                 [request (hash-insert
+                           (hash-insert request 'position position)
+                           'params params)])
+            (if (hash-contains? request 'sessionId)
+                (hx.send-lsp-command
+                 "lean" "$/lean/rpc/call" request
+                 (lambda (result)
+                   (native-record-rpc-action! lean4-hx-native generation
+                                              (value->jsexpr-string result))))
+                (hx.set-status! "lean4.hx: term goal unavailable")))))))
 
 (define (lean4-hx-on-close closed-event)
   (lean4-hx-rpc-release-for-document! (editor.doc-closed-id closed-event))
@@ -483,7 +486,7 @@
     (lean4-hx-render-panel-text! frame panel 6
                                  (string-append lean4-hx-leader-label " a  adaptive layout") style)
     (lean4-hx-render-panel-text! frame panel 7
-                                 (string-append lean4-hx-leader-label " y  report selected rows") style)
+                                 (string-append lean4-hx-leader-label " y/Y  copy/register") style)
     (lean4-hx-render-panel-text! frame panel 8 "Esc  close help" style)))
 
 (define (lean4-hx-report-selection!)
@@ -496,6 +499,41 @@
                  (min lean4-hx-selection-start lean4-hx-selection-end))))
         " panel rows"))
       (hx.set-status! "lean4.hx: no panel selection")))
+
+(define (lean4-hx-copy-selection! system?)
+  (if (and lean4-hx-selection-start lean4-hx-selection-end)
+      (let* ([area (if lean4-hx-selection-info?
+                       lean4-hx-info-area
+                       lean4-hx-goal-area)]
+             [origin (if area (components.area-y area) 0)]
+             [start (max 0 (- (min lean4-hx-selection-start lean4-hx-selection-end) origin))]
+             [end (max 0 (- (max lean4-hx-selection-start lean4-hx-selection-end) origin))]
+             [text (if lean4-hx-selection-info?
+                       (native-selected-info-text lean4-hx-native
+                                                   (components.area-width area)
+                                                   start end)
+                       (native-selected-text lean4-hx-native
+                                              (components.area-width area)
+                                              start end))])
+        (if (string=? text "")
+            (hx.set-status! "lean4.hx: empty panel selection")
+            (begin
+              (editor.set-register! (if system? #\+ #\") (list text))
+              (hx.set-status! (if system?
+                                 "lean4.hx: copied to clipboard"
+                                 "lean4.hx: copied panel text")))))
+      (hx.set-status! "lean4.hx: no panel selection")))
+
+(define (lean4-hx-extend-key-selection! delta)
+  (let* ([area (if lean4-hx-selection-info? lean4-hx-info-area lean4-hx-goal-area)]
+         [origin (if area (components.area-y area) 0)]
+         [height (if area (components.area-height area) 1)]
+         [current (if lean4-hx-selection-end lean4-hx-selection-end origin)]
+         [next (max origin (min (+ origin height -1) (+ current delta)))])
+    (if (not lean4-hx-selection-start)
+        (set! lean4-hx-selection-start origin)
+        #f)
+    (set! lean4-hx-selection-end next)))
 
 (define (lean4-hx-render-footer! frame panel)
   (let ([style (components.style-with-dim
@@ -568,6 +606,9 @@
              (and lean4-hx-info-area
                   (components.mouse-event-within-area? event lean4-hx-info-area))))
     (native-set-focused! state #t)
+    (set! lean4-hx-selection-info?
+          (and lean4-hx-info-area
+               (components.mouse-event-within-area? event lean4-hx-info-area)))
     (cond
      [(= (components.event-mouse-kind event) 0)
       (set! lean4-hx-selection-start (components.event-mouse-row event))
@@ -596,6 +637,7 @@
           (set! lean4-hx-leader-pending? #f)
           (set! lean4-hx-selection-start #f)
           (set! lean4-hx-selection-end #f)
+          (set! lean4-hx-selection-info? #f)
           ;; Let Helix also process Escape so insert mode returns to normal mode.
           components.event-result/ignore))]
    [(not (native-focused? state)) components.event-result/ignore]
@@ -637,7 +679,12 @@
        [(and lean4-hx-leader-pending? (equal? char #\y))
         (set! lean4-hx-prefix-pending? #f)
         (set! lean4-hx-leader-pending? #f)
-        (lean4-hx-report-selection!)
+        (lean4-hx-copy-selection! #f)
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\Y))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (lean4-hx-copy-selection! #t)
         components.event-result/consume]
        [(and lean4-hx-prefix-pending? (equal? char lean4-hx-leader-key))
         (set! lean4-hx-prefix-pending? #f)
@@ -658,6 +705,12 @@
         components.event-result/consume]
        [(equal? char #\t)
         (lean4-hx-request-term-goal!)
+        components.event-result/consume]
+       [(equal? char #\j)
+        (lean4-hx-extend-key-selection! 1)
+        components.event-result/consume]
+       [(equal? char #\k)
+        (lean4-hx-extend-key-selection! -1)
         components.event-result/consume]
        [else components.event-result/ignore]))]
    [(components.key-event-page-down? event)
