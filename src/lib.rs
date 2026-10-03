@@ -23,7 +23,7 @@ use steel::{
 use crate::{
     correspondence::{first_location, same_document, terminal_spans, TerminalSpan},
     goals::GoalState,
-    protocol::{Extras, PlainGoal, Position, Range},
+    protocol::{Extras, PlainGoal, Position},
 };
 
 macro_rules! trace {
@@ -36,6 +36,7 @@ macro_rules! trace {
 
 pub mod actions;
 pub mod correspondence;
+pub mod cursor_info;
 pub mod goals;
 pub mod protocol;
 pub mod unicode;
@@ -389,7 +390,7 @@ impl NativeState {
             trace!("LEAN4_HX_INFO kind={kind} result=malformed");
             return;
         };
-        let Some(lines) = info_lines(kind, &value, &stamp.position) else {
+        let Some(lines) = crate::cursor_info::parse(kind, &value, &stamp.position) else {
             trace!("LEAN4_HX_INFO kind={kind} result=empty");
             return;
         };
@@ -1086,83 +1087,6 @@ fn file_uri(path: &str) -> String {
     uri
 }
 
-fn position_le(left: &Position, right: &Position) -> bool {
-    left.line < right.line || (left.line == right.line && left.character <= right.character)
-}
-
-fn position_in_range(position: &Position, range: &Range) -> bool {
-    position_le(&range.start, position) && position_le(position, &range.end)
-}
-
-fn collect_info_text(value: &Value, lines: &mut Vec<String>) {
-    match value {
-        Value::String(text) if !text.trim().is_empty() => lines.extend(
-            text.lines()
-                .map(str::trim_end)
-                .filter(|line| !line.trim().is_empty())
-                .map(str::to_owned),
-        ),
-        Value::Array(values) => values.iter().for_each(|value| collect_info_text(value, lines)),
-        Value::Object(object) => {
-            for key in ["value", "label", "documentation", "contents"] {
-                if let Some(value) = object.get(key) {
-                    collect_info_text(value, lines);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn info_lines(kind: &str, value: &Value, position: &Position) -> Option<Vec<String>> {
-    let result = value.get("result").unwrap_or(value);
-    if result.is_null() {
-        return None;
-    }
-    if kind == "hover" {
-        if let Some(range) = result
-            .get("range")
-            .and_then(|range| serde_json::from_value::<Range>(range.clone()).ok())
-        {
-            if !position_in_range(position, &range) {
-                return None;
-            }
-        }
-        let mut lines = Vec::new();
-        collect_info_text(result.get("contents")?, &mut lines);
-        return (!lines.is_empty()).then_some(lines);
-    }
-    if kind == "signature" {
-        let mut lines = Vec::new();
-        if let Some(signatures) = result.get("signatures").and_then(Value::as_array) {
-            let active = result
-                .get("activeSignature")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            if let Some(signature) = signatures.get(active).or_else(|| signatures.first()) {
-                collect_info_text(signature.get("label")?, &mut lines);
-                if let Some(documentation) = signature.get("documentation") {
-                    collect_info_text(documentation, &mut lines);
-                }
-            }
-        }
-        return (!lines.is_empty()).then_some(lines);
-    }
-    let mut lines = Vec::new();
-    if let Some(hints) = result.as_array() {
-        for hint in hints {
-            if let Some(label) = hint.get("label") {
-                let mut text = Vec::new();
-                collect_info_text(label, &mut text);
-                if !text.is_empty() {
-                    lines.push(text.join(""));
-                }
-            }
-        }
-    }
-    (!lines.is_empty()).then_some(lines)
-}
-
 /// Construct the Steel FFI module loaded by `#%require-dylib`.
 pub fn build_module() -> FFIModule {
     let mut module = FFIModule::new("dylib/lean4-hx");
@@ -1276,7 +1200,7 @@ mod tests {
     fn native_state_rejects_stale_goal_after_cancel() {
         let state = NativeState::new();
         state.activate();
-        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 3);
         assert_ne!(generation, 0);
         assert_eq!(state.begin_request("/tmp/Main.lean".into(), 1, 0), 0);
         state.cancel_request();
@@ -1296,7 +1220,7 @@ mod tests {
         state.activate();
         assert_eq!(state.styled_lines(36), "[]");
 
-        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 3);
         state.record_callback(generation, "null".into());
         assert_eq!(state.styled_lines(36), "[]");
         assert!(state.lines().is_empty());
@@ -1439,10 +1363,10 @@ mod tests {
     fn cursor_info_renders_hover_and_inlay_without_a_goal() {
         let state = NativeState::new();
         state.activate();
-        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 3);
         state.record_hover(
             generation,
-            r#"{"contents":{"kind":"markdown","value":"Nat"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}}"#.into(),
+            r#"{"contents":{"kind":"markdown","value":"Nat"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}"#.into(),
         );
         state.record_inlay(
             generation,
