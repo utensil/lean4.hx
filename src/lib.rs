@@ -55,6 +55,7 @@ struct NativeState {
     generation: AtomicUsize,
     document_version: AtomicUsize,
     request_inflight: AtomicBool,
+    action_inflight: AtomicBool,
     focused: AtomicBool,
     scroll: AtomicUsize,
     selected_goal: AtomicUsize,
@@ -94,6 +95,7 @@ impl NativeState {
             generation: AtomicUsize::new(0),
             document_version: AtomicUsize::new(1),
             request_inflight: AtomicBool::new(false),
+            action_inflight: AtomicBool::new(false),
             focused: AtomicBool::new(false),
             scroll: AtomicUsize::new(0),
             selected_goal: AtomicUsize::new(0),
@@ -126,6 +128,7 @@ impl NativeState {
         self.clear_rpc_session();
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
+        self.action_inflight.store(false, Ordering::Release);
         self.scroll.store(0, Ordering::Release);
         self.selected_goal.store(0, Ordering::Release);
         self.goal_state
@@ -147,6 +150,7 @@ impl NativeState {
         self.clear_rpc_session();
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
+        self.action_inflight.store(false, Ordering::Release);
         self.focused.store(false, Ordering::Release);
         self.scroll.store(0, Ordering::Release);
         self.selected_goal.store(0, Ordering::Release);
@@ -187,6 +191,7 @@ impl NativeState {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.document_version.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
+        self.action_inflight.store(false, Ordering::Release);
         self.scroll.store(0, Ordering::Release);
         self.selected_goal.store(0, Ordering::Release);
         self.goal_state
@@ -214,6 +219,7 @@ impl NativeState {
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.document_version.store(1, Ordering::Release);
             self.request_inflight.store(false, Ordering::Release);
+            self.action_inflight.store(false, Ordering::Release);
             self.scroll.store(0, Ordering::Release);
             self.selected_goal.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
@@ -235,6 +241,7 @@ impl NativeState {
             self.clear_rpc_session();
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.request_inflight.store(false, Ordering::Release);
+            self.action_inflight.store(false, Ordering::Release);
             self.focused.store(false, Ordering::Release);
             self.scroll.store(0, Ordering::Release);
             self.selected_goal.store(0, Ordering::Release);
@@ -285,6 +292,7 @@ impl NativeState {
             .expect("navigation state poisoned") = None;
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
+        self.action_inflight.store(false, Ordering::Release);
         self.scroll.store(0, Ordering::Release);
         self.goal_state
             .lock()
@@ -644,6 +652,76 @@ impl NativeState {
         .to_string()
     }
 
+    /// Build the one supported user-triggered RPC action. The method is an
+    /// explicit capability boundary; callers cannot supply an arbitrary Lean
+    /// server method or reuse a session after its generation changed.
+    fn rpc_term_goal_request(&self, generation: usize) -> String {
+        if !self.generation_current(generation)
+            || self
+                .action_inflight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return "{}".into();
+        }
+        let session = self.rpc_session.lock().expect("rpc state poisoned").clone();
+        let Some(session) = session else {
+            self.action_inflight.store(false, Ordering::Release);
+            return "{}".into();
+        };
+        let state = self.goal_state.lock().expect("goal state poisoned");
+        let Some(stamp) = state
+            .active_stamp()
+            .filter(|stamp| stamp.generation == generation as u64)
+            .cloned()
+        else {
+            self.action_inflight.store(false, Ordering::Release);
+            return "{}".into();
+        };
+        let params = serde_json::json!({
+            "textDocument": {"uri": stamp.uri},
+            "position": stamp.position
+        });
+        trace!("LEAN4_HX_RPC action=request-term-goal");
+        serde_json::json!({
+            "textDocument": {"uri": stamp.uri},
+            "position": stamp.position,
+            "sessionId": session,
+            "method": "Lean.Widget.getInteractiveTermGoal",
+            "params": params
+        })
+        .to_string()
+    }
+
+    fn record_rpc_action(&self, generation: usize, result: String) {
+        let Some(stamp) = self.info_stamp_current(generation) else {
+            self.action_inflight.store(false, Ordering::Release);
+            trace!("LEAN4_HX_RPC action=term-goal stale");
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&result) else {
+            self.action_inflight.store(false, Ordering::Release);
+            trace!("LEAN4_HX_RPC action=term-goal malformed");
+            return;
+        };
+        if value.get("error").is_some() {
+            self.action_inflight.store(false, Ordering::Release);
+            trace!("LEAN4_HX_RPC action=term-goal rejected");
+            return;
+        }
+        let value = value.get("result").unwrap_or(&value);
+        let Some(goal) = value.get("goal").and_then(Value::as_str) else {
+            self.action_inflight.store(false, Ordering::Release);
+            trace!("LEAN4_HX_RPC action=term-goal unavailable");
+            return;
+        };
+        let mut info = self.cursor_info.lock().expect("cursor info poisoned");
+        info.stamp = Some(stamp);
+        info.lines = goal.lines().map(str::to_owned).collect();
+        self.action_inflight.store(false, Ordering::Release);
+        trace!("LEAN4_HX_RPC action=term-goal result=ready lines={}", info.lines.len());
+    }
+
     fn rpc_keepalive_request(&self) -> String {
         let session = self.rpc_session.lock().expect("rpc state poisoned").clone();
         let Some(session) = session else {
@@ -773,6 +851,10 @@ impl NativeState {
 
     fn generation_current(&self, generation: usize) -> bool {
         self.is_active() && self.generation.load(Ordering::Acquire) == generation
+    }
+
+    fn generation_number(&self) -> usize {
+        self.generation.load(Ordering::Acquire)
     }
 
     fn rpc_goals_request(&self, generation: usize, result: String) -> String {
@@ -1078,6 +1160,7 @@ pub fn build_module() -> FFIModule {
             NativeState::record_navigation_applied,
         )
         .register_fn("native-record-rpc!", NativeState::record_rpc)
+        .register_fn("native-record-rpc-action!", NativeState::record_rpc_action)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)
         .register_fn("native-styled-lines", NativeState::styled_lines)
@@ -1091,6 +1174,10 @@ pub fn build_module() -> FFIModule {
             NativeState::rpc_session_goals_request,
         )
         .register_fn(
+            "native-rpc-term-goal-request",
+            NativeState::rpc_term_goal_request,
+        )
+        .register_fn(
             "native-rpc-keepalive-request",
             NativeState::rpc_keepalive_request,
         )
@@ -1102,6 +1189,7 @@ pub fn build_module() -> FFIModule {
             "native-generation-current?",
             NativeState::generation_current,
         )
+        .register_fn("native-generation", NativeState::generation_number)
         .register_fn("native-focused?", NativeState::focused)
         .register_fn("native-set-focused!", NativeState::set_focused)
         .register_fn("native-scroll!", NativeState::scroll)
@@ -1247,6 +1335,36 @@ mod tests {
             state.rpc_goals_request(generation, r#"{"sessionId":"old"}"#.into()),
             "{}"
         );
+    }
+
+    #[test]
+    fn term_goal_action_is_capability_checked_and_rendered() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        state.record_rpc(generation, r#"{"sessionId":"session"}"#.into());
+        let request = state.rpc_term_goal_request(generation);
+        assert!(request.contains("Lean.Widget.getInteractiveTermGoal"));
+        assert!(request.contains("\"sessionId\":\"session\""));
+        assert_eq!(state.rpc_term_goal_request(generation), "{}");
+        state.record_rpc_action(
+            generation,
+            r#"{"result":{"goal":"x : Nat\n⊢ x = x"}}"#.into(),
+        );
+        let rendered = state.styled_lines(36);
+        assert!(rendered.contains("x"));
+    }
+
+    #[test]
+    fn term_goal_action_rejects_after_restart() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        state.record_rpc(generation, r#"{"sessionId":"old"}"#.into());
+        state.reset_rpc_after_server_restart();
+        assert_eq!(state.rpc_term_goal_request(generation), "{}");
+        state.record_rpc_action(generation, r#"{"result":{"goal":"stale"}}"#.into());
+        assert_eq!(state.styled_lines(36), "[]");
     }
 
     #[test]
