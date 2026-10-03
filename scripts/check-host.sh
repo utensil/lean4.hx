@@ -5,7 +5,7 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 host_tmp=${TMPDIR:-/tmp}
 helix_dir=${HOST_HELIX_DIR:-$host_tmp/lean4hx-helix}
 steel_dir=${HOST_STEEL_DIR:-$host_tmp/lean4hx-steel}
-expected_helix=89009294875d7e50f9a4614989331d37958a9e61
+expected_helix=5aad4d7f1cedf31dc7863928c519d93b0f697839
 expected_steel=24cd21598c091fb88bc10a6375a1ded25e677c37
 [ -d "$helix_dir/.git" ] || { echo "set HOST_HELIX_DIR to a detached pinned Helix checkout" >&2; exit 1; }
 [ -d "$steel_dir/.git" ] || { echo "set HOST_STEEL_DIR to a detached pinned Steel checkout" >&2; exit 1; }

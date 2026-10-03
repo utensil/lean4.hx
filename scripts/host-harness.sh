@@ -8,7 +8,7 @@ lean_toolchain=$(sed -n '1p' "$repo_root/.lean-toolchain")
 rust_toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo_root/rust-toolchain.toml")
 helix_url=https://github.com/utensil/helix.git
 helix_branch=lean-dev
-helix_commit=89009294875d7e50f9a4614989331d37958a9e61
+helix_commit=5aad4d7f1cedf31dc7863928c519d93b0f697839
 steel_url=https://github.com/utensil/steel.git
 steel_branch=lean-dev
 steel_commit=24cd21598c091fb88bc10a6375a1ded25e677c37

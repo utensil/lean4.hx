@@ -6,9 +6,9 @@ experimental; it is not yet a packaged editor extension.
 ## Dependencies
 
 - [utensil/helix](https://github.com/utensil/helix), branch `lean-dev`, pinned
-  to `89009294875d7e50f9a4614989331d37958a9e61`
+  to `5aad4d7f1cedf31dc7863928c519d93b0f697839`
 - [utensil/steel](https://github.com/utensil/steel), branch `lean-dev`, pinned
-  to `24cd21598c091fb88bc10a6375a1ded25e677c37`
+  to `5aad4d7f1cedf31dc7863928c519d93b0f697839`
 - Lean `v4.34.0`
 - Rust `1.100.0-nightly`
 
