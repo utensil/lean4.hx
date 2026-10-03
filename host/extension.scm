@@ -14,7 +14,7 @@
            native-begin-request! native-cancel-request!
            native-generation native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
            native-rpc-term-goal-request native-record-rpc-action!
-           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-summary native-file-uri
+           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-info-lines native-summary native-file-uri
            native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
@@ -39,6 +39,8 @@
 (define lean4-hx-last-file #f)
 (define lean4-hx-session-document #f)
 (define lean4-hx-panel-width 36)
+(define lean4-hx-goal-area #f)
+(define lean4-hx-info-area #f)
 
 ;; Dynamic components are compositor layers, so Helix gives them the full
 ;; terminal rectangle. Reserve a right editor strip before rendering the
@@ -383,6 +385,36 @@
                   (hx.set-status! "lean4.hx: navigated"))
                 (hx.set-warning! "lean4.hx: navigation target range unavailable"))))))))
 
+(define (lean4-hx-render-lines frame panel styled)
+  (let* ([row (components.area-y panel)]
+         [last-row (+ (components.area-y panel)
+                      (components.area-height panel))])
+    (for-each
+     (lambda (line)
+       (if (< row last-row)
+           (for-each
+            (lambda (span)
+              (let* ([style-name (hash-ref span 'style)]
+                     [style (cond
+                             [(string=? style-name "goal")
+                              (components.style-fg
+                               (components.style-with-bold (components.style))
+                               components.Color/Blue)]
+                             [(string=? style-name "type")
+                              (components.style-fg (components.style) components.Color/Cyan)]
+                             [(string=? style-name "keyword")
+                              (components.style-fg (components.style) components.Color/Yellow)]
+                             [(string=? style-name "error")
+                              (components.style-fg (components.style) components.Color/Red)]
+                             [else (components.style)])])
+                (components.frame-set-string!
+                 frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
+                 row (hash-ref span 'text) style)))
+            line)
+           #f)
+      (set! row (+ row 1)))
+     styled)))
+
 (define (lean4-hx-render state area frame)
   (let* ([width (min lean4-hx-panel-width (components.area-width area))]
          [left (+ (components.area-x area)
@@ -391,41 +423,45 @@
                                  (components.area-y area)
                                  width
                                  (components.area-height area))]
-         [row (components.area-y panel)]
-         [last-row (+ (components.area-y panel)
-                      (components.area-height panel))])
-    ;; Clear the reserved rectangle before drawing shorter goal responses.
+         [info-height (if (> (components.area-height panel) 10) 6 0)]
+         [goal-height (- (components.area-height panel) info-height)]
+         [goal-panel (components.area left
+                                      (components.area-y panel)
+                                      width
+                                      goal-height)]
+         [info-panel (components.area left
+                                      (+ (components.area-y panel) goal-height)
+                                      width
+                                      info-height)])
+    ;; Keep the rectangles in Scheme so the dynamic component can hit-test
+    ;; mouse input without pretending to be a full Helix editor view.
+    (set! lean4-hx-goal-area goal-panel)
+    (set! lean4-hx-info-area info-panel)
     (components.buffer/clear-with frame panel (components.style))
-    (let ([styled (string->jsexpr
-                   (native-styled-lines state (components.area-width panel)))])
-      (for-each
-       (lambda (line)
-         (if (< row last-row)
-             (for-each
-              (lambda (span)
-                (let* ([style-name (hash-ref span 'style)]
-                       [style (cond
-                               [(string=? style-name "goal")
-                                (components.style-fg
-                                 (components.style-with-bold (components.style))
-                                 components.Color/Blue)]
-                               [(string=? style-name "type")
-                                (components.style-fg (components.style) components.Color/Cyan)]
-                               [(string=? style-name "keyword")
-                                (components.style-fg (components.style) components.Color/Yellow)]
-                               [(string=? style-name "error")
-                                (components.style-fg (components.style) components.Color/Red)]
-                               [else (components.style)])])
-                  (components.frame-set-string!
-                   frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
-                   row (hash-ref span 'text) style)))
-              line)
-             #f)
-        (set! row (+ row 1)))
-       styled))))
+    (lean4-hx-render-lines
+     frame goal-panel
+     (string->jsexpr (native-styled-lines state (components.area-width goal-panel))))
+    (if (> info-height 0)
+        (lean4-hx-render-lines
+         frame info-panel
+         (string->jsexpr (native-info-lines state (components.area-width info-panel))))
+        #f)))
 
 (define (lean4-hx-handle-event state event)
   (cond
+   [(and (components.mouse-event? event)
+         (or (and lean4-hx-goal-area
+                  (components.mouse-event-within-area? event lean4-hx-goal-area))
+             (and lean4-hx-info-area
+                  (components.mouse-event-within-area? event lean4-hx-info-area))))
+    (native-set-focused! state #t)
+    (cond
+     [(= (components.event-mouse-kind event) 10)
+      (native-scroll! state 1)]
+     [(= (components.event-mouse-kind event) 11)
+      (native-scroll! state -1)]
+     [else #f])
+    components.event-result/consume]
    [(components.key-event-tab? event)
     (native-set-focused! state #t)
     components.event-result/consume]

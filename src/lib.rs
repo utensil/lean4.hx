@@ -864,8 +864,7 @@ impl NativeState {
             .expect("goal state poisoned")
             .snapshot()
             .cloned();
-        let info = self.cursor_info.lock().expect("cursor info poisoned").clone();
-        let mut body = snapshot
+        let body = snapshot
             .as_ref()
             .filter(|snapshot| snapshot.unavailable.is_none() && !snapshot.styled_goals.is_empty())
             .map(|snapshot| {
@@ -873,20 +872,6 @@ impl NativeState {
                 snapshot.styled_lines(selected)
             })
             .unwrap_or_default();
-        if !body.is_empty() && !info.lines.is_empty() {
-            body.push(vec![TerminalSpan {
-                text: String::new(),
-                style: crate::correspondence::TerminalStyle::Plain,
-                tags: Vec::new(),
-            }]);
-        }
-        body.extend(info.lines.into_iter().map(|line| {
-            vec![TerminalSpan {
-                text: line,
-                style: crate::correspondence::TerminalStyle::Plain,
-                tags: Vec::new(),
-            }]
-        }));
         if body.is_empty() {
             return "[]".into();
         }
@@ -897,6 +882,25 @@ impl NativeState {
             .min(lines.len().saturating_sub(1));
         self.scroll.store(offset, Ordering::Release);
         serde_json::to_string(&lines.into_iter().skip(offset).collect::<Vec<_>>()).unwrap()
+    }
+
+    fn info_lines(&self, width: usize) -> String {
+        let info = self.cursor_info.lock().expect("cursor info poisoned").clone();
+        if info.lines.is_empty() {
+            return "[]".into();
+        }
+        let body = info
+            .lines
+            .into_iter()
+            .map(|text| {
+                vec![TerminalSpan {
+                    text,
+                    style: crate::correspondence::TerminalStyle::Plain,
+                    tags: Vec::new(),
+                }]
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string(&crate::correspondence::layout_lines(&body, width)).unwrap()
     }
 
     fn generation_current(&self, generation: usize) -> bool {
@@ -1137,6 +1141,7 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)
         .register_fn("native-styled-lines", NativeState::styled_lines)
+        .register_fn("native-info-lines", NativeState::info_lines)
         .register_fn("native-rpc-goals-request", NativeState::rpc_goals_request)
         .register_fn(
             "native-rpc-session-current?",
@@ -1249,7 +1254,7 @@ mod tests {
             generation,
             r#"{"contents":"Nat","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}}"#.into(),
         );
-        let rendered = serde_json::from_str::<Value>(&state.styled_lines(36)).unwrap();
+        let rendered = serde_json::from_str::<Value>(&state.info_lines(36)).unwrap();
         let text = rendered
             .as_array()
             .into_iter()
@@ -1348,7 +1353,7 @@ mod tests {
             generation,
             r#"{"result":{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}},"term":{"p":"1"},"type":{"tag":[{"info":{"p":"2"},"subexprPos":"/"},{"text":"Nat"}]},"hyps":[],"ctx":{"p":"3"}}}"#.into(),
         );
-        let rendered = state.styled_lines(36);
+        let rendered = state.info_lines(36);
         let rendered = serde_json::from_str::<Value>(&rendered).unwrap();
         let text = rendered
             .as_array()
@@ -1372,11 +1377,11 @@ mod tests {
             generation,
             r#"{"result":{"type":{"text":"stale"}}}"#.into(),
         );
-        assert_eq!(state.styled_lines(36), "[]");
+        assert_eq!(state.info_lines(36), "[]");
     }
 
     #[test]
-    fn cursor_info_renders_hover_and_inlay_without_a_goal() {
+    fn cursor_info_renders_hover_and_inlay_in_the_information_surface() {
         let state = NativeState::new();
         state.activate();
         let generation = state.begin_request("/tmp/Main.lean".into(), 0, 3);
@@ -1388,7 +1393,7 @@ mod tests {
             generation,
             r#"[{"position":{"line":0,"character":3},"label":" : Nat"}]"#.into(),
         );
-        let rendered = state.styled_lines(36);
+        let rendered = state.info_lines(36);
         let rendered = serde_json::from_str::<Value>(&rendered).unwrap();
         let mut text = String::new();
         for row in rendered.as_array().unwrap() {
@@ -1411,9 +1416,9 @@ mod tests {
             generation,
             r#"{"contents":"wrong","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}"#.into(),
         );
-        assert_eq!(state.styled_lines(36), "[]");
+        assert_eq!(state.info_lines(36), "[]");
         state.cancel_request();
         state.record_hover(generation, r#"{"contents":"stale"}"#.into());
-        assert_eq!(state.styled_lines(36), "[]");
+        assert_eq!(state.info_lines(36), "[]");
     }
 }

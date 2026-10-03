@@ -60,7 +60,7 @@ fn parse_hover(value: &Value, position: &Position) -> Option<Vec<String>> {
         }
     }
     let contents = value.get("contents")?;
-    nonempty(text_lines(contents, true))
+    nonempty(concise_hover_lines(contents))
 }
 
 fn parse_signature(value: &Value) -> Option<Vec<String>> {
@@ -75,11 +75,7 @@ fn parse_signature(value: &Value) -> Option<Vec<String>> {
         .or_else(|| signatures.first())?
         .as_object()?;
 
-    let mut lines = text_lines(signature.get("label")?, true);
-    if let Some(documentation) = signature.get("documentation") {
-        lines.extend(text_lines(documentation, true));
-    }
-    nonempty(lines)
+    nonempty(concise_hover_lines(signature.get("label")?))
 }
 
 fn parse_inlay(value: &Value, position: &Position) -> Option<Vec<String>> {
@@ -152,6 +148,61 @@ fn compare(left: &Position, right: &Position) -> std::cmp::Ordering {
 
 fn nonempty(lines: Vec<String>) -> Option<Vec<String>> {
     (!lines.is_empty()).then_some(lines)
+}
+
+/// Keep only the compact type/signature part of automatic cursor information.
+/// Prose documentation belongs to Helix's explicit hover surface, not the
+/// persistent infoview. Markdown code blocks remain useful because Lean servers
+/// commonly wrap a type in one.
+fn concise_hover_lines(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => concise_text(text),
+        Value::Array(values) => values.iter().flat_map(concise_hover_lines).collect(),
+        Value::Object(object) => {
+            if let Some(language) = object.get("language").and_then(Value::as_str) {
+                if language != "lean" && language != "" {
+                    return Vec::new();
+                }
+            }
+            object
+                .get("value")
+                .map(concise_hover_lines)
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn concise_text(text: &str) -> Vec<String> {
+    let lines = split_text(text, true);
+    let fenced = text.lines().any(|line| is_fence(line));
+    lines
+        .into_iter()
+        .filter(|line| !fenced || looks_like_type_line(line))
+        .filter(|line| looks_like_type_line(line))
+        .collect()
+}
+
+fn looks_like_type_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.contains('`') || trimmed.len() > 240 {
+        return false;
+    }
+    if trimmed.contains(':')
+        || trimmed.contains("→")
+        || trimmed.contains("->")
+        || trimmed.contains("∀")
+        || trimmed.contains("⊢")
+        || trimmed.contains(" := ")
+    {
+        return true;
+    }
+    // A standalone constructor/type name is useful; lowercase prose is not.
+    trimmed.len() <= 3
+        && trimmed
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_uppercase() || !ch.is_ascii() || ch.is_ascii_alphabetic())
 }
 
 /// Extract text from MarkedString, MarkupContent, or an array of either.
@@ -239,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_marked_string_strips_fences_and_keeps_spacing() {
+    fn hover_keeps_code_and_drops_markdown_prose() {
         let value = json!({
             "contents": [
                 {"language": "lean", "value": "```lean\n  Nat  \n\n```"},
@@ -249,7 +300,7 @@ mod tests {
         });
         assert_eq!(
             parse("hover", &value, &position(1, 2)),
-            Some(vec!["  Nat  ".into(), " docs ".into()])
+            Some(vec!["  Nat  ".into()])
         );
     }
 
@@ -282,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn signature_uses_active_label_and_documentation() {
+    fn signature_uses_active_label_without_documentation() {
         let value = json!({
             "signatures": [
                 {"label": "old"},
@@ -292,7 +343,7 @@ mod tests {
         });
         assert_eq!(
             parse("signature", &value, &position(0, 0)),
-            Some(vec!["f (x : Nat)".into(), "meaning".into()])
+            Some(vec!["f (x : Nat)".into()])
         );
     }
 
