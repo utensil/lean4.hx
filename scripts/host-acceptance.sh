@@ -135,6 +135,7 @@ need "LEAN4_HX_CALLBACK result=reply"
 send ":lsp-restart"
 send "\\r"
 sleep 5
+need "LEAN4_HX_RPC action=release refs="
 need "LEAN4_HX_RPC action=reset"
 send "g"
 send "g"
