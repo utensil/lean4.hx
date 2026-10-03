@@ -267,6 +267,11 @@ fn spans_text(spans: &[TerminalSpan]) -> String {
 pub struct GoalState {
     active: Option<RequestStamp>,
     snapshot: Option<GoalSnapshot>,
+    /// An empty goal response only proves that the goal at the exact cursor
+    /// position is complete. Keep it pending until a later cursor position
+    /// also has no goal; this prevents a solved bullet from masquerading as a
+    /// completed theorem while sibling goals remain.
+    completion_candidate: Option<RequestStamp>,
     next_generation: u64,
 }
 
@@ -275,6 +280,7 @@ impl Default for GoalState {
         Self {
             active: None,
             snapshot: None,
+            completion_candidate: None,
             next_generation: 0,
         }
     }
@@ -295,6 +301,13 @@ impl GoalState {
             position,
             generation,
         };
+        if self.completion_candidate.as_ref().is_some_and(|candidate| {
+            candidate.uri != stamp.uri
+                || candidate.version != stamp.version
+                || !position_after(&stamp.position, &candidate.position)
+        }) {
+            self.completion_candidate = None;
+        }
         self.active = Some(stamp.clone());
         stamp
     }
@@ -303,6 +316,19 @@ impl GoalState {
         if self.active.as_ref() != Some(&snapshot.stamp) {
             return false;
         }
+        if snapshot.completed {
+            if self.completion_candidate.as_ref().is_some_and(|candidate| {
+                position_after(&snapshot.stamp.position, &candidate.position)
+            }) {
+                self.completion_candidate = None;
+                self.snapshot = Some(snapshot);
+            } else {
+                self.completion_candidate = Some(snapshot.stamp.clone());
+                self.snapshot = Some(GoalSnapshot::unavailable(snapshot.stamp, "no current goal"));
+            }
+            return true;
+        }
+        self.completion_candidate = None;
         self.snapshot = Some(snapshot);
         true
     }
@@ -313,13 +339,6 @@ impl GoalState {
         };
         if stamp.generation != generation {
             return false;
-        }
-        if self
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.stamp == stamp && snapshot.interactive)
-        {
-            return true;
         }
         self.accept(GoalSnapshot::from_plain_goal(stamp, goal))
     }
@@ -347,9 +366,9 @@ impl GoalState {
     }
 
     /// A null plain-goal reply normally means that the cursor is outside a
-    /// proof. When the cursor advanced on the same proof line after a valid
-    /// goal, treat it as the completed-proof transition so the infoview can
-    /// celebrate it without showing an unavailable placeholder.
+    /// proof. Treat it as a completed-proof transition only after a preceding
+    /// empty response was followed by a later cursor position with no goal.
+    /// This avoids celebrating a solved bullet while sibling goals remain.
     pub fn accept_no_goal(&mut self, generation: u64, reason: impl Into<String>) -> bool {
         let Some(stamp) = self.active.clone() else {
             return false;
@@ -357,12 +376,10 @@ impl GoalState {
         if stamp.generation != generation {
             return false;
         }
-        let completed = self.snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.unavailable.is_none()
-                && snapshot.stamp.uri == stamp.uri
-                && snapshot.stamp.version == stamp.version
-                && snapshot.stamp.position.line == stamp.position.line
-                && stamp.position.character > snapshot.stamp.position.character
+        let completed = self.completion_candidate.as_ref().is_some_and(|candidate| {
+            candidate.uri == stamp.uri
+                && candidate.version == stamp.version
+                && position_after(&stamp.position, &candidate.position)
         });
         if completed {
             self.accept(GoalSnapshot::from_plain_goal(
@@ -386,6 +403,7 @@ impl GoalState {
     pub fn close(&mut self) {
         self.active = None;
         self.snapshot = None;
+        self.completion_candidate = None;
     }
 
     pub fn snapshot(&self) -> Option<&GoalSnapshot> {
@@ -402,6 +420,10 @@ impl GoalState {
             GoalSnapshot::display_text,
         )
     }
+}
+
+fn position_after(left: &Position, right: &Position) -> bool {
+    left.line > right.line || (left.line == right.line && left.character > right.character)
 }
 
 #[cfg(test)]
@@ -542,9 +564,17 @@ mod tests {
     }
 
     #[test]
-    fn null_after_progress_on_the_same_proof_line_marks_completion() {
+    fn solved_bullet_does_not_mark_theorem_complete() {
         let mut state = GoalState::default();
-        let first = state.begin("file:///Main.lean", 1, Position { line: 1, character: 0, extra: Extras::new() });
+        let first = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 0,
+                extra: Extras::new(),
+            },
+        );
         assert!(state.accept(GoalSnapshot::from_plain_goal(
             first,
             PlainGoal {
@@ -553,8 +583,71 @@ mod tests {
                 extra: Extras::new(),
             },
         )));
-        let second = state.begin("file:///Main.lean", 1, Position { line: 1, character: 3, extra: Extras::new() });
+        let second = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 3,
+                extra: Extras::new(),
+            },
+        );
         assert!(state.accept_no_goal(second.generation, "Lean returned no goal"));
+        assert!(!state.snapshot().unwrap().completed);
+        assert_eq!(
+            state.display_text(),
+            "Lean unavailable: Lean returned no goal"
+        );
+    }
+
+    #[test]
+    fn later_no_goal_confirms_completion_after_empty_bullet() {
+        let mut state = GoalState::default();
+        let first = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 0,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept(GoalSnapshot::from_plain_goal(
+            first,
+            PlainGoal {
+                rendered: "⊢ p".into(),
+                goals: vec!["⊢ p".into()],
+                extra: Extras::new(),
+            },
+        )));
+        let solved = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 3,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept_plain_goal(
+            solved.generation,
+            PlainGoal {
+                rendered: "no goals".into(),
+                goals: Vec::new(),
+                extra: Extras::new(),
+            },
+        ));
+        assert!(!state.snapshot().unwrap().completed);
+        let after = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 2,
+                character: 0,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept_no_goal(after.generation, "Lean returned no goal"));
         assert!(state.snapshot().unwrap().completed);
         assert_eq!(state.display_text(), "🎉 Goal complete");
     }
