@@ -311,6 +311,21 @@ impl GoalState {
         }
     }
 
+    /// Record a successful request with no goal while keeping its stamp alive
+    /// for the other cursor-scoped LSP replies (hover, signature, and inlay).
+    /// A null plain-goal response is absence of goal content, not cancellation
+    /// of the cursor request itself.
+    pub fn accept_unavailable(&mut self, generation: u64, reason: impl Into<String>) -> bool {
+        let Some(stamp) = self.active.clone() else {
+            return false;
+        };
+        if stamp.generation != generation {
+            return false;
+        }
+        self.snapshot = Some(GoalSnapshot::unavailable(stamp, reason));
+        true
+    }
+
     pub fn invalidate_and_advance(&mut self, reason: impl Into<String>) {
         self.next_generation = self.next_generation.saturating_add(1);
         self.invalidate(reason);
