@@ -48,10 +48,20 @@ cp "$repo_root/target/release/liblean4_hx.dylib" "$steel_home/native/liblean4_hx
 : >"$helix_config/helix.scm"
 : >"$steel_home/helix.scm"
 cat >"$helix_config/config.toml" <<'EOF'
+theme = "modus_vivendi"
+
 [editor]
 enable-steel = true
+
+[editor.lsp]
+display-inlay-hints = true
+inlay-hints-length-limit = 24
 EOF
 cp "$helix_config/config.toml" "$config_dir/config.toml"
+grep -F '"ui.virtual.inlay-hint"' "$runtime_dir/themes/modus_vivendi.toml" >/dev/null || {
+    echo "selected acceptance theme does not dim inlay hints" >&2
+    exit 1
+}
 cat >"$config_dir/helix/languages.toml" <<'EOF'
 [[language]]
 name = "lean"

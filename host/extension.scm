@@ -49,6 +49,8 @@
 (define lean4-hx-prefix-pending? #f)
 (define lean4-hx-leader-pending? #f)
 (define lean4-hx-help-visible? #f)
+(define lean4-hx-selection-start #f)
+(define lean4-hx-selection-end #f)
 
 (define (lean4-hx-set-layout! mode)
   (if (or (equal? mode "split") (equal? mode "adaptive"))
@@ -426,25 +428,32 @@
     (for-each
      (lambda (line)
        (if (< row last-row)
-           (for-each
-            (lambda (span)
-              (let* ([style-name (hash-ref span 'style)]
-                     [style (cond
-                             [(string=? style-name "goal")
-                              (components.style-fg
-                               (components.style-with-bold (components.style))
-                               components.Color/Blue)]
-                             [(string=? style-name "type")
-                              (components.style-fg (components.style) components.Color/Cyan)]
-                             [(string=? style-name "keyword")
-                              (components.style-fg (components.style) components.Color/Yellow)]
-                             [(string=? style-name "error")
-                              (components.style-fg (components.style) components.Color/Red)]
-                             [else (components.style)])])
-                (components.frame-set-string!
-                 frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
-                 row (hash-ref span 'text) style)))
-            line)
+           (let ([selected? (and lean4-hx-selection-start
+                                 lean4-hx-selection-end
+                                 (<= (min lean4-hx-selection-start lean4-hx-selection-end) row)
+                                 (<= row (max lean4-hx-selection-start lean4-hx-selection-end)))])
+             (for-each
+              (lambda (span)
+                (let* ([style-name (hash-ref span 'style)]
+                       [style (cond
+                               [(string=? style-name "goal")
+                                (components.style-fg
+                                 (components.style-with-bold (components.style))
+                                 components.Color/Blue)]
+                               [(string=? style-name "type")
+                                (components.style-fg (components.style) components.Color/Cyan)]
+                               [(string=? style-name "keyword")
+                                (components.style-fg (components.style) components.Color/Yellow)]
+                               [(string=? style-name "error")
+                                (components.style-fg (components.style) components.Color/Red)]
+                               [else (components.style)])]
+                       [style (if selected?
+                                  (components.style-with-reversed style)
+                                  style)])
+                  (components.frame-set-string!
+                   frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
+                   row (hash-ref span 'text) style)))
+              line))
            #f)
       (set! row (+ row 1)))
      styled)))
@@ -473,7 +482,20 @@
                                  (string-append lean4-hx-leader-label " t  term goal") style)
     (lean4-hx-render-panel-text! frame panel 6
                                  (string-append lean4-hx-leader-label " a  adaptive layout") style)
-    (lean4-hx-render-panel-text! frame panel 7 "Esc  close help" style)))
+    (lean4-hx-render-panel-text! frame panel 7
+                                 (string-append lean4-hx-leader-label " y  report selected rows") style)
+    (lean4-hx-render-panel-text! frame panel 8 "Esc  close help" style)))
+
+(define (lean4-hx-report-selection!)
+  (if (and lean4-hx-selection-start lean4-hx-selection-end)
+      (hx.set-status!
+       (string-append
+        "lean4.hx selected "
+        (number->string
+         (+ 1 (- (max lean4-hx-selection-start lean4-hx-selection-end)
+                 (min lean4-hx-selection-start lean4-hx-selection-end))))
+        " panel rows"))
+      (hx.set-status! "lean4.hx: no panel selection")))
 
 (define (lean4-hx-render-footer! frame panel)
   (let ([style (components.style-with-dim
@@ -547,6 +569,13 @@
                   (components.mouse-event-within-area? event lean4-hx-info-area))))
     (native-set-focused! state #t)
     (cond
+     [(= (components.event-mouse-kind event) 0)
+      (set! lean4-hx-selection-start (components.event-mouse-row event))
+      (set! lean4-hx-selection-end (components.event-mouse-row event))]
+     [(= (components.event-mouse-kind event) 6)
+      (set! lean4-hx-selection-end (components.event-mouse-row event))]
+     [(= (components.event-mouse-kind event) 3)
+      (set! lean4-hx-selection-end (components.event-mouse-row event))]
      [(= (components.event-mouse-kind event) 10)
       (native-scroll! state 1)]
      [(= (components.event-mouse-kind event) 11)
@@ -565,6 +594,8 @@
           (native-set-focused! state #f)
           (set! lean4-hx-prefix-pending? #f)
           (set! lean4-hx-leader-pending? #f)
+          (set! lean4-hx-selection-start #f)
+          (set! lean4-hx-selection-end #f)
           ;; Let Helix also process Escape so insert mode returns to normal mode.
           components.event-result/ignore))]
    [(not (native-focused? state)) components.event-result/ignore]
@@ -602,6 +633,11 @@
         (if (equal? lean4-hx-layout-mode "split")
             (set! lean4-hx-layout-mode "adaptive")
             (set! lean4-hx-layout-mode "split"))
+        components.event-result/consume]
+       [(and lean4-hx-leader-pending? (equal? char #\y))
+        (set! lean4-hx-prefix-pending? #f)
+        (set! lean4-hx-leader-pending? #f)
+        (lean4-hx-report-selection!)
         components.event-result/consume]
        [(and lean4-hx-prefix-pending? (equal? char lean4-hx-leader-key))
         (set! lean4-hx-prefix-pending? #f)
