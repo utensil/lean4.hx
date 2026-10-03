@@ -207,35 +207,51 @@
 (define (lean4-hx-rpc-release!)
   (lean4-hx-rpc-release-for-document! lean4-hx-session-document))
 
+(define (lean4-hx-send-term-goal! generation)
+  (let ([request (string->jsexpr
+                  (native-rpc-term-goal-request lean4-hx-native generation))])
+    (if (hash-contains? request 'position)
+        (let* ([position (hash-ref request 'position)]
+               ;; Steel may parse JSON numbers as inexact values. Lean's RPC
+               ;; decoder requires Nat positions, so normalize both copies
+               ;; before sending the request.
+               [line (exact (hash-ref position 'line))]
+               [character (exact (hash-ref position 'character))]
+               [position (hash-insert
+                          (hash-insert position 'line line)
+                          'character character)]
+               [params (hash-ref request 'params)]
+               [params (hash-insert
+                        (hash-insert params 'position position)
+                        'textDocument (hash-ref request 'textDocument))]
+               [request (hash-insert
+                         (hash-insert request 'position position)
+                         'params params)])
+          (if (hash-contains? request 'sessionId)
+              (hx.send-lsp-command
+               "lean" "$/lean/rpc/call" request
+               (lambda (result)
+                 (native-record-rpc-action! lean4-hx-native generation
+                                            (value->jsexpr-string result))))
+              (hx.set-status! "lean4.hx: term goal unavailable")))
+        ;; A cursor refresh may have completed before the RPC connect callback.
+        ;; Reconnect once, then retry against the same generation; this avoids
+        ;; the intermittent unavailable action without retaining stale sessions.
+        (let ([path (static.cx->current-file)])
+          (if path
+              (hx.send-lsp-command
+               "lean" "$/lean/rpc/connect"
+               (hash "uri" (native-file-uri path))
+               (lambda (result)
+                 (let ([wire (value->jsexpr-string result)])
+                   (native-record-rpc! lean4-hx-native generation wire)
+                   (if (hash-contains? (string->jsexpr wire) 'sessionId)
+                       (lean4-hx-send-term-goal! generation)
+                       (hx.set-status! "lean4.hx: term goal unavailable")))))
+              (hx.set-status! "lean4.hx: term goal unavailable"))))))
+
 (define (lean4-hx-request-term-goal!)
-  (let ([generation (native-generation lean4-hx-native)])
-    (let ([request (string->jsexpr
-                    (native-rpc-term-goal-request lean4-hx-native generation))])
-      (if (not (hash-contains? request 'position))
-          (hx.set-status! "lean4.hx: term goal unavailable")
-          (let* ([position (hash-ref request 'position)]
-                 ;; Steel may parse JSON numbers as inexact values. Lean's RPC
-                 ;; decoder requires Nat positions, so normalize both copies
-                 ;; before sending the request.
-                 [line (exact (hash-ref position 'line))]
-                 [character (exact (hash-ref position 'character))]
-                 [position (hash-insert
-                            (hash-insert position 'line line)
-                            'character character)]
-                 [params (hash-ref request 'params)]
-                 [params (hash-insert
-                          (hash-insert params 'position position)
-                          'textDocument (hash-ref request 'textDocument))]
-                 [request (hash-insert
-                           (hash-insert request 'position position)
-                           'params params)])
-            (if (hash-contains? request 'sessionId)
-                (hx.send-lsp-command
-                 "lean" "$/lean/rpc/call" request
-                 (lambda (result)
-                   (native-record-rpc-action! lean4-hx-native generation
-                                              (value->jsexpr-string result))))
-                (hx.set-status! "lean4.hx: term goal unavailable")))))))
+  (lean4-hx-send-term-goal! (native-generation lean4-hx-native)))
 
 (define (lean4-hx-on-close closed-event)
   (lean4-hx-rpc-release-for-document! (editor.doc-closed-id closed-event))
