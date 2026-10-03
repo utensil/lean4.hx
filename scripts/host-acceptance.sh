@@ -77,6 +77,7 @@ set env(HELIX_RUNTIME) "$runtime_dir"
 set env(XDG_CONFIG_HOME) "$config_dir"
 set env(HELIX_STEEL_CONFIG) "$helix_config"
 set env(STEEL_HOME) "$steel_home"
+set env(LEAN4_HX_TRACE) "1"
 set env(PATH) "$elan_dir:\$env(PATH)"
 proc need {pattern} {
     expect {

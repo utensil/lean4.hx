@@ -26,6 +26,14 @@ use crate::{
     protocol::{Extras, PlainGoal, Position},
 };
 
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if std::env::var_os("LEAN4_HX_TRACE").is_some() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 pub mod actions;
 pub mod correspondence;
 pub mod goals;
@@ -102,7 +110,7 @@ impl NativeState {
     fn activate(&self) {
         self.active.store(true, Ordering::Release);
         self.installs.fetch_add(1, Ordering::Relaxed);
-        eprintln!("LEAN4_HX_INSTALL active=true");
+        trace!("LEAN4_HX_INSTALL active=true");
     }
 
     fn deactivate(&self) {
@@ -122,7 +130,7 @@ impl NativeState {
             .lock()
             .expect("navigation state poisoned") = None;
         self.removals.fetch_add(1, Ordering::Relaxed);
-        eprintln!("LEAN4_HX_REMOVE active=false");
+        trace!("LEAN4_HX_REMOVE active=false");
     }
 
     fn is_active(&self) -> bool {
@@ -132,7 +140,7 @@ impl NativeState {
     fn record_selection(&self) {
         if self.is_active() {
             self.selections.fetch_add(1, Ordering::Relaxed);
-            eprintln!("LEAN4_HX_SELECTION");
+            trace!("LEAN4_HX_SELECTION");
         }
     }
 
@@ -163,7 +171,7 @@ impl NativeState {
             .lock()
             .expect("navigation state poisoned") = None;
         self.inserts.fetch_add(1, Ordering::Relaxed);
-        eprintln!(
+        trace!(
             "LEAN4_HX_DOCUMENT_CHANGED version={}",
             self.document_version.load(Ordering::Acquire)
         );
@@ -186,7 +194,7 @@ impl NativeState {
                 .lock()
                 .expect("navigation state poisoned") = None;
             self.opened.fetch_add(1, Ordering::Relaxed);
-            eprintln!("LEAN4_HX_OPEN");
+            trace!("LEAN4_HX_OPEN");
         }
     }
 
@@ -207,7 +215,7 @@ impl NativeState {
                 .lock()
                 .expect("navigation state poisoned") = None;
             self.closed.fetch_add(1, Ordering::Relaxed);
-            eprintln!("LEAN4_HX_CLOSE");
+            trace!("LEAN4_HX_CLOSE");
         }
     }
 
@@ -258,7 +266,7 @@ impl NativeState {
             self.requests.fetch_add(1, Ordering::Relaxed);
             let mut last = self.last_request.lock().expect("request state poisoned");
             *last = format!("line={line},character={character}");
-            eprintln!("LEAN4_HX_REQUEST line={line} character={character}");
+            trace!("LEAN4_HX_REQUEST line={line} character={character}");
         }
     }
 
@@ -285,7 +293,7 @@ impl NativeState {
                     })
                     .unwrap_or(false);
                 if !accepted {
-                    eprintln!("LEAN4_HX_CALLBACK result=stale");
+                    trace!("LEAN4_HX_CALLBACK result=stale");
                     return;
                 }
                 self.goal_state
@@ -297,8 +305,8 @@ impl NativeState {
             self.scroll.store(0, Ordering::Release);
             self.selected_goal.store(0, Ordering::Release);
             *self.goal.lock().expect("goal state poisoned") = goal.clone();
-            eprintln!("LEAN4_HX_CALLBACK result=reply");
-            eprintln!(
+            trace!("LEAN4_HX_CALLBACK result=reply");
+            trace!(
                 "LEAN4_HX_GOAL generation={generation} available={}",
                 goal != "Lean goal unavailable" && !goal.is_empty()
             );
@@ -310,17 +318,17 @@ impl NativeState {
                     .snapshot()
                     .map(|snapshot| snapshot.display_lines().len())
                     .unwrap_or(0);
-                eprintln!("LEAN4_HX_GOAL_RENDER_READY lines={lines} available=true");
-                eprintln!("LEAN4_HX_GOAL_AVAILABLE");
+                trace!("LEAN4_HX_GOAL_RENDER_READY lines={lines} available=true");
+                trace!("LEAN4_HX_GOAL_AVAILABLE");
             }
         } else {
-            eprintln!("LEAN4_HX_CALLBACK result=stale");
+            trace!("LEAN4_HX_CALLBACK result=stale");
         }
     }
 
     fn record_navigation(&self, generation: usize, result: String) {
         if !self.is_active() || self.generation.load(Ordering::Acquire) != generation {
-            eprintln!("LEAN4_HX_NAVIGATION stale");
+            trace!("LEAN4_HX_NAVIGATION stale");
             return;
         }
         let current_uri = self
@@ -345,11 +353,11 @@ impl NativeState {
                 } else {
                     "cross-file"
                 };
-                eprintln!("LEAN4_HX_NAVIGATION {relation}");
+                trace!("LEAN4_HX_NAVIGATION {relation}");
                 format!("navigation {relation}")
             })
             .unwrap_or_else(|| {
-                eprintln!("LEAN4_HX_NAVIGATION unavailable");
+                trace!("LEAN4_HX_NAVIGATION unavailable");
                 "navigation unavailable".to_owned()
             });
         *self.navigation.lock().expect("navigation state poisoned") = navigation;
@@ -448,12 +456,12 @@ impl NativeState {
     fn record_rpc(&self, generation: usize, result: String) {
         if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
             let Ok(value) = serde_json::from_str::<Value>(&result) else {
-                eprintln!("LEAN4_HX_RPC action=reply");
+                trace!("LEAN4_HX_RPC action=reply");
                 return;
             };
             if value.get("error").is_some() {
                 self.clear_rpc_session();
-                eprintln!("LEAN4_HX_RPC action=error");
+                trace!("LEAN4_HX_RPC action=error");
                 return;
             }
             if let Some(session) = value.get("sessionId") {
@@ -462,7 +470,7 @@ impl NativeState {
                     *current = Some(session.clone());
                     self.rpc_refs.lock().expect("rpc state poisoned").clear();
                 }
-                eprintln!("LEAN4_HX_RPC action=connect");
+                trace!("LEAN4_HX_RPC action=connect");
             } else {
                 let stamp = self
                     .goal_state
@@ -489,16 +497,16 @@ impl NativeState {
                                 .snapshot()
                                 .map(|snapshot| snapshot.display_lines().len())
                                 .unwrap_or(0);
-                            eprintln!("LEAN4_HX_RPC action=interactive-goals");
-                            eprintln!("LEAN4_HX_TAGGED_RENDER_READY lines={lines} available=true");
+                            trace!("LEAN4_HX_RPC action=interactive-goals");
+                            trace!("LEAN4_HX_TAGGED_RENDER_READY lines={lines} available=true");
                             return;
                         }
                     }
                 }
-                eprintln!("LEAN4_HX_RPC action=reply");
+                trace!("LEAN4_HX_RPC action=reply");
             }
         } else {
-            eprintln!("LEAN4_HX_RPC stale");
+            trace!("LEAN4_HX_RPC stale");
         }
     }
 
@@ -550,7 +558,7 @@ impl NativeState {
             .lock()
             .expect("navigation state poisoned")
             .clone();
-        eprintln!("LEAN4_HX_RPC action=keepAlive");
+        trace!("LEAN4_HX_RPC action=keepAlive");
         serde_json::json!({"uri": uri, "sessionId": session}).to_string()
     }
 
@@ -565,7 +573,7 @@ impl NativeState {
             .expect("navigation state poisoned")
             .clone();
         let refs = self.rpc_refs.lock().expect("rpc state poisoned").clone();
-        eprintln!("LEAN4_HX_RPC action=release refs={}", refs.len());
+        trace!("LEAN4_HX_RPC action=release refs={}", refs.len());
         self.clear_rpc_session();
         serde_json::json!({"uri": uri, "sessionId": session, "refs": refs}).to_string()
     }
@@ -585,7 +593,7 @@ impl NativeState {
             .lock()
             .expect("navigation state poisoned")
             .clone();
-        eprintln!(
+        trace!(
             "LEAN4_HX_RENDER available={}",
             goal != "Lean goal unavailable" && !goal.is_empty()
         );
@@ -684,7 +692,7 @@ impl NativeState {
             serde_json::json!({"textDocument":{"uri":stamp.uri},"position":stamp.position,
             "sessionId":session,"method":"Lean.Widget.getInteractiveGoals","params":params})
             .to_string();
-        eprintln!(
+        trace!(
             "LEAN4_HX_RPC_REQUEST generation={generation} method=Lean.Widget.getInteractiveGoals"
         );
         request
@@ -696,7 +704,7 @@ impl NativeState {
 
     fn set_focused(&self, focused: bool) {
         self.focused.store(focused, Ordering::Release);
-        eprintln!("LEAN4_HX_GOAL_FOCUS focused={focused}");
+        trace!("LEAN4_HX_GOAL_FOCUS focused={focused}");
     }
 
     fn scroll(&self, amount: isize) {
@@ -722,7 +730,7 @@ impl NativeState {
                 })
                 .ok();
         }
-        eprintln!(
+        trace!(
             "LEAN4_HX_GOAL_SELECTED index={}",
             self.selected_goal.load(Ordering::Acquire)
         );
@@ -735,7 +743,7 @@ impl NativeState {
                 Some(index.saturating_sub(1))
             })
             .ok();
-        eprintln!(
+        trace!(
             "LEAN4_HX_GOAL_SELECTED index={}",
             self.selected_goal.load(Ordering::Acquire)
         );
