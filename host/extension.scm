@@ -142,12 +142,8 @@
   ;; Helix does not expose a language-server restart hook. Reset the owned
   ;; Lean RPC session after the user invokes the restart command so the next
   ;; cursor request connects afresh instead of sending a stale session id.
-  ;; Release first so opaque references owned by the old server are not
-  ;; discarded when native reset clears the local session.
   (if (string=? command-name "lsp-restart")
-      (begin
-        (lean4-hx-rpc-release!)
-        (native-reset-rpc-after-server-restart! lean4-hx-native))
+      (native-reset-rpc-after-server-restart! lean4-hx-native)
       #f))
 
 (define (lean4-hx-rpc-keepalive!)
