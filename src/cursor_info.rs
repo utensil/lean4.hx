@@ -163,6 +163,11 @@ fn concise_hover_lines(value: &Value) -> Vec<String> {
                 if language != "lean" && language != "" {
                     return Vec::new();
                 }
+                return object
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .map(concise_text)
+                    .unwrap_or_default();
             }
             object
                 .get("value")
@@ -174,11 +179,28 @@ fn concise_hover_lines(value: &Value) -> Vec<String> {
 }
 
 fn concise_text(text: &str) -> Vec<String> {
-    let lines = split_text(text, true);
-    let fenced = text.lines().any(|line| is_fence(line));
-    lines
+    let mut lines = Vec::new();
+    let mut in_lean_fence = false;
+    let mut saw_fence = false;
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if is_fence(raw) {
+            saw_fence = true;
+            in_lean_fence = !in_lean_fence;
+            continue;
+        }
+        if in_lean_fence {
+            lines.extend(split_text(trimmed, false));
+        }
+    }
+    if saw_fence {
+        return lines
+            .into_iter()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+    }
+    split_text(text, true)
         .into_iter()
-        .filter(|line| !fenced || looks_like_type_line(line))
         .filter(|line| looks_like_type_line(line))
         .collect()
 }
@@ -188,8 +210,17 @@ fn looks_like_type_line(line: &str) -> bool {
     if trimmed.is_empty() || trimmed.contains('`') || trimmed.len() > 240 {
         return false;
     }
-    if trimmed.contains(':')
-        || trimmed.contains("→")
+    if let Some((_, rhs)) = trimmed.split_once(':') {
+        let rhs = rhs.trim_start();
+        if rhs.chars().next().is_some_and(|ch| {
+            ch.is_uppercase()
+                || !ch.is_ascii()
+                || matches!(ch, '(' | '{' | '[' | '∀' | '⊢' | '_')
+        }) {
+            return true;
+        }
+    }
+    if trimmed.contains("→")
         || trimmed.contains("->")
         || trimmed.contains("∀")
         || trimmed.contains("⊢")
@@ -300,7 +331,7 @@ mod tests {
         });
         assert_eq!(
             parse("hover", &value, &position(1, 2)),
-            Some(vec!["  Nat  ".into()])
+            Some(vec!["Nat".into()])
         );
     }
 
