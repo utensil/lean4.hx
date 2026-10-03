@@ -33,6 +33,14 @@
 (define lean4-hx-installed? #f)
 (define lean4-hx-hooks-installed? #f)
 (define lean4-hx-selection-pending? #f)
+(define lean4-hx-panel-height 8)
+
+;; Dynamic components are compositor layers, so Helix gives them the full
+;; terminal rectangle. Reserve a bottom editor strip before rendering the
+;; component; this keeps goal text in its own pane instead of painting over
+;; the source buffer.
+(define (lean4-hx-apply-panel-layout! height)
+  (editor.set-editor-clip-bottom! height))
 
 (define (lean4-hx-expand-unicode!)
   (let ([path (static.cx->current-file)])
@@ -278,14 +286,23 @@
                 (hx.set-warning! "lean4.hx: navigation target range unavailable"))))))))
 
 (define (lean4-hx-render state area frame)
-  (let ([row (components.area-y area)]
-        [last-row (+ (components.area-y area) (components.area-height area))])
+  (let* ([height (min lean4-hx-panel-height (components.area-height area))]
+         [top (+ (components.area-y area)
+                 (- (components.area-height area) height))]
+         [panel (components.area (components.area-x area)
+                                 top
+                                 (components.area-width area)
+                                 height)]
+         [row top]
+         [last-row (+ top height)])
+    ;; Clear the reserved rectangle before drawing shorter goal responses.
+    (components.buffer/clear-with frame panel (components.style))
     (if (< row last-row)
         (components.frame-set-string! frame
                                       (components.area-x area)
                                       row
                                       (car (native-lines state))
-                                      (components.style)))
+                                      (components.style-with-bold (components.style))))
     (set! row (+ row 1))
     (let ([styled (string->jsexpr
                    (native-styled-lines state (components.area-width area)))])
@@ -297,7 +314,9 @@
                 (let* ([style-name (hash-ref span 'style)]
                        [style (cond
                                [(string=? style-name "goal")
-                                (components.style-with-bold (components.style))]
+                                (components.style-fg
+                                 (components.style-with-bold (components.style))
+                                 components.Color/Blue)]
                                [(string=? style-name "type")
                                 (components.style-fg (components.style) components.Color/Cyan)]
                                [(string=? style-name "keyword")
@@ -367,6 +386,7 @@
                                           lean4-hx-render
                                           (hash "handle_event"
                                                 lean4-hx-handle-event)))
+        (lean4-hx-apply-panel-layout! lean4-hx-panel-height)
         (hx.push-component! lean4-hx-component)
         (set! lean4-hx-installed? #t)
         (lean4-hx-status "lean4.hx installed")
@@ -380,6 +400,7 @@
         (set! lean4-hx-component #f))
       #f)
   (native-deactivate! lean4-hx-native)
+  (lean4-hx-apply-panel-layout! 0)
   (set! lean4-hx-installed? #f)
   (set! lean4-hx-selection-pending? #f)
   (lean4-hx-status "lean4.hx removed")
