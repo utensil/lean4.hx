@@ -9,7 +9,7 @@
 (#%require-dylib "liblean4_hx"
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-document-change! native-record-open!
-           native-record-close! native-record-request! native-record-callback!
+           native-record-close! native-reset-rpc-after-server-restart! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
            native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
            native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-summary native-file-uri
@@ -116,6 +116,14 @@
 (define (lean4-hx-on-open document)
   (native-record-open! lean4-hx-native)
   (lean4-hx-schedule-refresh!))
+
+(define (lean4-hx-on-post-command command-name)
+  ;; Helix does not expose a language-server restart hook. Reset the owned
+  ;; Lean RPC session after the user invokes the restart command so the next
+  ;; cursor request connects afresh instead of sending a stale session id.
+  (if (string=? command-name "lsp-restart")
+      (native-reset-rpc-after-server-restart! lean4-hx-native)
+      #f))
 
 (define (lean4-hx-rpc-keepalive!)
   (let ([request (string->jsexpr (native-rpc-keepalive-request lean4-hx-native))])
@@ -368,6 +376,7 @@
               (editor.register-hook 'document-changed lean4-hx-on-document-change)
               (editor.register-hook 'document-opened lean4-hx-on-open)
               (editor.register-hook 'document-closed lean4-hx-on-close)
+              (editor.register-hook 'post-command lean4-hx-on-post-command)
               (set! lean4-hx-hooks-installed? #t))
             #f)
         (set! lean4-hx-component

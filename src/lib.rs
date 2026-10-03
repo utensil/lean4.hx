@@ -107,6 +107,22 @@ impl NativeState {
         self.rpc_refs.lock().expect("rpc state poisoned").clear();
     }
 
+    fn reset_rpc_after_server_restart(&self) {
+        if !self.is_active() {
+            return;
+        }
+        self.clear_rpc_session();
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.request_inflight.store(false, Ordering::Release);
+        self.scroll.store(0, Ordering::Release);
+        self.selected_goal.store(0, Ordering::Release);
+        self.goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .invalidate_and_advance("server restarting");
+        trace!("LEAN4_HX_RPC action=reset");
+    }
+
     fn activate(&self) {
         self.active.store(true, Ordering::Release);
         self.installs.fetch_add(1, Ordering::Relaxed);
@@ -870,6 +886,10 @@ pub fn build_module() -> FFIModule {
         )
         .register_fn("native-record-open!", NativeState::record_opened)
         .register_fn("native-record-close!", NativeState::record_closed)
+        .register_fn(
+            "native-reset-rpc-after-server-restart!",
+            NativeState::reset_rpc_after_server_restart,
+        )
         .register_fn("native-record-request!", NativeState::record_request)
         .register_fn("native-begin-request!", NativeState::begin_request)
         .register_fn("native-cancel-request!", NativeState::cancel_request)
@@ -1028,5 +1048,22 @@ mod tests {
         assert!(state.rpc_session_current(generation));
         state.record_rpc(generation, r#"{"error":{"code":-32600}}"#.into());
         assert!(!state.rpc_session_current(generation));
+    }
+
+    #[test]
+    fn rpc_reset_rejects_session_owned_by_restarted_server() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        state.record_rpc(generation, r#"{"sessionId":"old"}"#.into());
+        assert!(state.rpc_session_current(generation));
+
+        state.reset_rpc_after_server_restart();
+
+        assert!(!state.rpc_session_current(generation));
+        assert_eq!(
+            state.rpc_goals_request(generation, r#"{"sessionId":"old"}"#.into()),
+            "{}"
+        );
     }
 }

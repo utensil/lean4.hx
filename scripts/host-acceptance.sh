@@ -135,6 +135,13 @@ need "LEAN4_HX_CALLBACK result=reply"
 send ":lsp-restart"
 send "\\r"
 sleep 5
+need "LEAN4_HX_RPC action=reset"
+send "g"
+send "g"
+send "j"
+sleep 2
+need "LEAN4_HX_REQUEST line="
+need "LEAN4_HX_GOAL_AVAILABLE"
 send ":buffer-close!"
 send "\\r"
 need "LEAN4_HX_CLOSE"
