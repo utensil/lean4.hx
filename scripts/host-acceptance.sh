@@ -41,7 +41,7 @@ project_dir=$run_dir/project
 mkdir -p "$helix_config" "$steel_home/cogs" "$steel_home/native" "$project_dir"
 mkdir -p "$config_dir/helix"
 cp -R "$helix_dir/runtime/." "$runtime_dir/"
-cp "$fixture/Main.lean" "$fixture/lakefile.toml" "$fixture/.lean-toolchain" "$project_dir/"
+cp "$fixture/Main.lean" "$fixture/Term.lean" "$fixture/lakefile.toml" "$fixture/.lean-toolchain" "$project_dir/"
 cp "$repo_root/host/extension.scm" "$steel_home/cogs/lean4-hx.scm"
 cp "$repo_root/host/extension.scm" "$helix_config/lean4-hx.scm"
 cp "$repo_root/target/release/liblean4_hx.dylib" "$steel_home/native/liblean4_hx.dylib"
@@ -153,6 +153,17 @@ need "LEAN4_HX_REQUEST line="
 send "j"
 sleep 2
 need "LEAN4_HX_GOAL_AVAILABLE"
+send ":open Term.lean"
+send "\\r"
+need "LEAN4_HX_OPEN"
+sleep 2
+send "llllllllllllllllllll"
+sleep 2
+need "LEAN4_HX_REQUEST line=0 character=20"
+send ":lean4-hx-request-term-goal!"
+send "\\r"
+need "LEAN4_HX_RPC action=request-term-goal"
+need "LEAN4_HX_RPC action=term-goal result=ready lines="
 send ":lean4-hx-remove-component!"
 send "\\r"
 need "LEAN4_HX_REMOVE active=false"
@@ -180,6 +191,8 @@ for marker in \
     'LEAN4_HX_GOAL_FOCUS focused=false' \
     'LEAN4_HX_GOAL_SELECTED index=' \
     'LEAN4_HX_RPC action=keepAlive' \
+    'LEAN4_HX_RPC action=request-term-goal' \
+    'LEAN4_HX_RPC action=term-goal result=ready lines=' \
     'LEAN4_HX_RPC action=release refs=' \
     'LEAN4_HX_REMOVE active=false'; do
     grep -F "$marker" "$pty_log" >/dev/null || {
