@@ -86,6 +86,18 @@ proc need {pattern} {
         eof { puts stderr "Helix exited before \$pattern"; exit 1 }
     }
 }
+proc need_both {first second} {
+    set seen_first 0
+    set seen_second 0
+    while {!(\$seen_first && \$seen_second)} {
+        expect {
+            -exact \$first { set seen_first 1 }
+            -exact \$second { set seen_second 1 }
+            timeout { puts stderr "timed out waiting for \$first and \$second"; exit 1 }
+            eof { puts stderr "Helix exited before \$first and \$second"; exit 1 }
+        }
+    }
+}
 cd "$project_dir"
 spawn "$hx_bin" Main.lean
 need "LEAN4_HX_INSTALL active=true"
@@ -94,8 +106,7 @@ sleep 2
 need "LEAN4_HX_REQUEST line="
 send "j"
 sleep 2
-need "LEAN4_HX_GOAL_AVAILABLE"
-need "LEAN4_HX_TAGGED_RENDER_READY"
+need_both "LEAN4_HX_GOAL_AVAILABLE" "LEAN4_HX_TAGGED_RENDER_READY"
 send "j"
 send "j"
 sleep 2

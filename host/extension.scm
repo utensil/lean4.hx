@@ -12,7 +12,7 @@
            native-record-close! native-record-request! native-record-callback!
            native-record-navigation! native-begin-request! native-cancel-request!
            native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
-           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-lines native-styled-lines native-summary native-file-uri
+           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-summary native-file-uri
            native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
@@ -102,8 +102,7 @@
   (if (native-active? lean4-hx-native)
       (native-cancel-request! lean4-hx-native)
       #f)
-  (lean4-hx-schedule-refresh!)
-  (lean4-hx-status "lean4.hx selection"))
+  (lean4-hx-schedule-refresh!))
 
 (define (lean4-hx-on-document-change document old-text)
   (native-record-document-change! lean4-hx-native)
@@ -123,7 +122,6 @@
     (if (hash-contains? request 'sessionId)
         (begin
           (hx.send-lsp-notification "lean" "$/lean/rpc/keepAlive" request)
-          (hx.set-status! "lean4.hx RPC keep-alive")
           #t)
         #f)))
 
@@ -137,7 +135,6 @@
            0
            (lambda ()
              (hx.send-lsp-notification "lean" "$/lean/rpc/release" request)))
-          (hx.set-status! "lean4.hx RPC released")
           #t)
         #f)))
 
@@ -149,8 +146,7 @@
   (if (native-active? lean4-hx-native)
       (begin
         (native-record-callback! lean4-hx-native generation
-                                 (value->jsexpr-string result))
-        (lean4-hx-status "lean4.hx Lean callback"))
+                                 (value->jsexpr-string result)))
       #f))
 
 (define (lean4-hx-on-definition generation result)
@@ -242,8 +238,7 @@
                                            (hash "uri" uri)
                                            (lambda (result)
                                              (lean4-hx-on-rpc generation result)))))
-                #f))
-          (lean4-hx-status "lean4.hx Lean request"))
+                #f)))
         (hx.set-warning! "lean4.hx: current document has no file URI"))))
 
 ;; Delegate ordinary Lean fixes to Helix's stock, version-aware code-action
@@ -298,13 +293,6 @@
                       (components.area-height panel))])
     ;; Clear the reserved rectangle before drawing shorter goal responses.
     (components.buffer/clear-with frame panel (components.style))
-    (if (< row last-row)
-        (components.frame-set-string! frame
-                                      (components.area-x panel)
-                                      row
-                                      (car (native-lines state))
-                                      (components.style-with-bold (components.style))))
-    (set! row (+ row 1))
     (let ([styled (string->jsexpr
                    (native-styled-lines state (components.area-width panel)))])
       (for-each
@@ -330,7 +318,7 @@
                    row (hash-ref span 'text) style)))
               line)
              #f)
-         (set! row (+ row 1)))
+        (set! row (+ row 1)))
        styled))))
 
 (define (lean4-hx-handle-event state event)
@@ -390,7 +378,6 @@
         (lean4-hx-apply-panel-layout! lean4-hx-panel-width)
         (hx.push-component! lean4-hx-component)
         (set! lean4-hx-installed? #t)
-        (lean4-hx-status "lean4.hx installed")
         "lean4.hx installed")))
 
 (define (lean4-hx-remove-component!)
@@ -404,5 +391,4 @@
   (lean4-hx-apply-panel-layout! 0)
   (set! lean4-hx-installed? #f)
   (set! lean4-hx-selection-pending? #f)
-  (lean4-hx-status "lean4.hx removed")
   "lean4.hx component removed")

@@ -21,7 +21,7 @@ use steel::{
 };
 
 use crate::{
-    correspondence::{first_location, same_document, TerminalStyle},
+    correspondence::{first_location, same_document},
     goals::GoalState,
     protocol::{Extras, PlainGoal, Position},
 };
@@ -607,36 +607,30 @@ impl NativeState {
             .expect("goal state poisoned")
             .snapshot()
             .cloned();
-        let count = snapshot.as_ref().map_or(0, |snapshot| snapshot.goals.len());
+        let Some(snapshot) = snapshot else {
+            return Vec::new();
+        };
+        if snapshot.unavailable.is_some() {
+            return Vec::new();
+        }
         let selected = self
             .selected_goal
             .load(Ordering::Acquire)
-            .min(count.saturating_sub(1));
-        let mut lines = vec![format!(
-            "Lean goals [{}] goal {}/{}",
-            if self.focused() { "focused" } else { "source" },
-            if count == 0 { 0 } else { selected + 1 },
-            count
-        )];
-        let body = snapshot
-            .map(|snapshot| {
-                if snapshot.unavailable.is_none() && !snapshot.goals.is_empty() {
-                    snapshot.goals[selected]
-                        .lines()
-                        .map(str::to_owned)
-                        .collect()
-                } else {
-                    snapshot.display_lines()
-                }
-            })
-            .unwrap_or_else(|| vec!["Lean goal unavailable".to_owned()]);
+            .min(snapshot.goals.len().saturating_sub(1));
+        let body = if !snapshot.goals.is_empty() {
+            snapshot.goals[selected]
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        } else {
+            snapshot.display_lines()
+        };
         let offset = self
             .scroll
             .load(Ordering::Acquire)
             .min(body.len().saturating_sub(1));
         self.scroll.store(offset, Ordering::Release);
-        lines.extend(body.into_iter().skip(offset));
-        lines
+        body.into_iter().skip(offset).collect()
     }
 
     fn styled_lines(&self, width: usize) -> String {
@@ -646,16 +640,14 @@ impl NativeState {
             .expect("goal state poisoned")
             .snapshot()
             .cloned();
+        let Some(snapshot) = snapshot else {
+            return "[]".into();
+        };
+        if snapshot.unavailable.is_some() || snapshot.styled_goals.is_empty() {
+            return "[]".into();
+        }
         let selected = self.selected_goal.load(Ordering::Acquire);
-        let body = snapshot
-            .map(|snapshot| snapshot.styled_lines(selected))
-            .unwrap_or_else(|| {
-                vec![vec![crate::correspondence::TerminalSpan {
-                    text: "Lean goal unavailable".to_owned(),
-                    style: TerminalStyle::Plain,
-                    tags: Vec::new(),
-                }]]
-            });
+        let body = snapshot.styled_lines(selected);
         let lines = crate::correspondence::layout_lines(&body, width);
         let offset = self
             .scroll
@@ -970,6 +962,18 @@ mod tests {
             *state.goal.lock().expect("goal state poisoned"),
             "Lean goal unavailable"
         );
+    }
+
+    #[test]
+    fn native_panel_is_empty_without_a_current_goal() {
+        let state = NativeState::new();
+        state.activate();
+        assert_eq!(state.styled_lines(36), "[]");
+
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        state.record_callback(generation, "null".into());
+        assert_eq!(state.styled_lines(36), "[]");
+        assert!(state.lines().is_empty());
     }
 
     #[test]
