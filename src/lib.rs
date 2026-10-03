@@ -866,7 +866,10 @@ impl NativeState {
             .cloned();
         let body = snapshot
             .as_ref()
-            .filter(|snapshot| snapshot.unavailable.is_none() && !snapshot.styled_goals.is_empty())
+            .filter(|snapshot| {
+                snapshot.unavailable.is_none()
+                    && (snapshot.completed || !snapshot.styled_goals.is_empty())
+            })
             .map(|snapshot| {
                 let selected = self.selected_goal.load(Ordering::Acquire);
                 snapshot.styled_lines(selected)
