@@ -451,6 +451,14 @@ impl NativeState {
         *self.navigation.lock().expect("navigation state poisoned") = navigation;
     }
 
+    fn record_navigation_applied(&self, path: String, line: usize, character: usize) {
+        if self.is_active() {
+            trace!(
+                "LEAN4_HX_NAVIGATION_APPLIED path={path} line={line} character={character}"
+            );
+        }
+    }
+
     fn navigation_uri(&self) -> String {
         self.navigation_target
             .lock()
@@ -1065,6 +1073,10 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-record-signature!", NativeState::record_signature)
         .register_fn("native-record-inlay!", NativeState::record_inlay)
         .register_fn("native-record-navigation!", NativeState::record_navigation)
+        .register_fn(
+            "native-record-navigation-applied!",
+            NativeState::record_navigation_applied,
+        )
         .register_fn("native-record-rpc!", NativeState::record_rpc)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)

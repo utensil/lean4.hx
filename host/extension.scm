@@ -10,7 +10,7 @@
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-document-change! native-record-open!
            native-record-close! native-reset-rpc-after-server-restart! native-record-request! native-record-callback!
-           native-record-hover! native-record-inlay! native-record-navigation! native-record-signature!
+           native-record-hover! native-record-inlay! native-record-navigation! native-record-navigation-applied! native-record-signature!
            native-begin-request! native-cancel-request!
            native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
            native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-summary native-file-uri
@@ -316,6 +316,7 @@
                   (static.set-current-selection-object!
                    (static.range->selection (static.range start end)))
                   (native-set-focused! lean4-hx-native #f)
+                  (native-record-navigation-applied! lean4-hx-native path start-line start-character)
                   (hx.set-status! "lean4.hx: navigated"))
                 (hx.set-warning! "lean4.hx: navigation target range unavailable"))))))))
 

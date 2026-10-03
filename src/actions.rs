@@ -4,6 +4,7 @@ use crate::{
     goals::RequestStamp,
     protocol::{Position, Range},
 };
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextEdit {
@@ -12,6 +13,20 @@ pub struct TextEdit {
     pub range: Range,
     pub new_text: String,
     pub generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceDocumentEdit {
+    pub uri: String,
+    pub version: Option<i32>,
+    pub edits: Vec<TextEdit>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentSnapshot {
+    pub version: i32,
+    pub generation: u64,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +46,7 @@ pub enum ActionError {
     VersionMismatch,
     Unsupported(String),
     InvalidRange(String),
+    MissingDocument(String),
 }
 
 pub fn validate_text_edit(edit: &TextEdit, current: &RequestStamp) -> Result<(), ActionError> {
@@ -91,6 +107,41 @@ pub fn apply_workspace_edit(
         cursor = edit.end;
     }
     result.push_str(&source[cursor..]);
+    Ok(result)
+}
+
+/// Preflight and apply a multi-document edit as one transaction. The returned
+/// map is built only after every document and range has passed validation, so a
+/// caller can publish all replacements together without partial writes.
+pub fn apply_workspace_transaction(
+    documents: &BTreeMap<String, DocumentSnapshot>,
+    changes: &[WorkspaceDocumentEdit],
+) -> Result<BTreeMap<String, String>, ActionError> {
+    let mut result = BTreeMap::new();
+    for change in changes {
+        let current = documents
+            .get(&change.uri)
+            .ok_or_else(|| ActionError::MissingDocument(change.uri.clone()))?;
+        if let Some(version) = change.version {
+            if version != current.version {
+                return Err(ActionError::VersionMismatch);
+            }
+        }
+        let stamp = RequestStamp {
+            uri: change.uri.clone(),
+            version: current.version,
+            position: Position {
+                line: 0,
+                character: 0,
+                extra: Default::default(),
+            },
+            generation: current.generation,
+        };
+        result.insert(
+            change.uri.clone(),
+            apply_workspace_edit(&current.text, &change.edits, &stamp)?,
+        );
+    }
     Ok(result)
 }
 
@@ -529,6 +580,66 @@ mod tests {
         assert_eq!(
             validate_rpc_action(&action, &current),
             Err(ActionError::Unsupported("unsupported".into()))
+        );
+    }
+
+    #[test]
+    fn workspace_transaction_preflights_all_documents_before_returning() {
+        let mut documents = BTreeMap::new();
+        documents.insert(
+            "file:///Main.lean".into(),
+            DocumentSnapshot {
+                version: 4,
+                generation: 8,
+                text: "#check Nat\n".into(),
+            },
+        );
+        documents.insert(
+            "file:///Helper.lean".into(),
+            DocumentSnapshot {
+                version: 2,
+                generation: 9,
+                text: "def answer := 41\n".into(),
+            },
+        );
+        let edit = |uri: &str, version: i32, generation: u64, text: &str| {
+            WorkspaceDocumentEdit {
+                uri: uri.into(),
+                version: Some(version),
+                edits: vec![TextEdit {
+                    uri: uri.into(),
+                    version,
+                    range: Range {
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                            extra: Default::default(),
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                            extra: Default::default(),
+                        },
+                        extra: Default::default(),
+                    },
+                    new_text: text.into(),
+                    generation,
+                }],
+            }
+        };
+        let changes = [
+            edit("file:///Main.lean", 4, 8, "-- changed\n"),
+            edit("file:///Helper.lean", 2, 9, "-- changed\n"),
+        ];
+        let applied = apply_workspace_transaction(&documents, &changes).unwrap();
+        assert!(applied["file:///Main.lean"].starts_with("-- changed"));
+        assert!(applied["file:///Helper.lean"].starts_with("-- changed"));
+
+        let mut stale = changes.to_vec();
+        stale[1].version = Some(3);
+        assert_eq!(
+            apply_workspace_transaction(&documents, &stale),
+            Err(ActionError::VersionMismatch)
         );
     }
 
