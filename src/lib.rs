@@ -21,9 +21,9 @@ use steel::{
 };
 
 use crate::{
-    correspondence::{first_location, same_document},
+    correspondence::{first_location, same_document, TerminalSpan},
     goals::GoalState,
-    protocol::{Extras, PlainGoal, Position},
+    protocol::{Extras, PlainGoal, Position, Range},
 };
 
 macro_rules! trace {
@@ -67,6 +67,13 @@ struct NativeState {
     goal_state: Mutex<GoalState>,
     rpc_session: Mutex<Option<Value>>,
     rpc_refs: Mutex<Vec<Value>>,
+    cursor_info: Mutex<CursorInfo>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CursorInfo {
+    stamp: Option<crate::goals::RequestStamp>,
+    lines: Vec<String>,
 }
 
 impl Custom for NativeState {}
@@ -99,7 +106,12 @@ impl NativeState {
             goal_state: Mutex::new(GoalState::default()),
             rpc_session: Mutex::new(None),
             rpc_refs: Mutex::new(Vec::new()),
+            cursor_info: Mutex::new(CursorInfo::default()),
         }
+    }
+
+    fn clear_cursor_info(&self) {
+        *self.cursor_info.lock().expect("cursor info poisoned") = CursorInfo::default();
     }
 
     fn clear_rpc_session(&self) {
@@ -120,6 +132,7 @@ impl NativeState {
             .lock()
             .expect("goal state poisoned")
             .invalidate_and_advance("server restarting");
+        self.clear_cursor_info();
         trace!("LEAN4_HX_RPC action=reset");
     }
 
@@ -138,6 +151,7 @@ impl NativeState {
         self.scroll.store(0, Ordering::Release);
         self.selected_goal.store(0, Ordering::Release);
         self.goal_state.lock().expect("goal state poisoned").close();
+        self.clear_cursor_info();
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
@@ -179,6 +193,7 @@ impl NativeState {
             .lock()
             .expect("goal state poisoned")
             .invalidate_and_advance("document changed");
+        self.clear_cursor_info();
         *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
@@ -202,6 +217,7 @@ impl NativeState {
             self.scroll.store(0, Ordering::Release);
             self.selected_goal.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
+            self.clear_cursor_info();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             *self.navigation.lock().expect("navigation state poisoned") =
                 "Navigation unavailable".to_owned();
@@ -223,6 +239,7 @@ impl NativeState {
             self.scroll.store(0, Ordering::Release);
             self.selected_goal.store(0, Ordering::Release);
             self.goal_state.lock().expect("goal state poisoned").close();
+            self.clear_cursor_info();
             *self.goal.lock().expect("goal state poisoned") = "Lean goal unavailable".to_owned();
             *self.navigation.lock().expect("navigation state poisoned") =
                 "Navigation unavailable".to_owned();
@@ -273,6 +290,7 @@ impl NativeState {
             .lock()
             .expect("goal state poisoned")
             .invalidate_and_advance("selection changed");
+        self.clear_cursor_info();
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
     }
@@ -340,6 +358,60 @@ impl NativeState {
         } else {
             trace!("LEAN4_HX_CALLBACK result=stale");
         }
+    }
+
+    fn info_stamp_current(&self, generation: usize) -> Option<crate::goals::RequestStamp> {
+        if !self.is_active() || !self.generation_current(generation) {
+            return None;
+        }
+        self.goal_state
+            .lock()
+            .expect("goal state poisoned")
+            .active_stamp()
+            .filter(|stamp| stamp.generation == generation as u64)
+            .cloned()
+    }
+
+    fn record_info(&self, generation: usize, result: String, kind: &str) {
+        let Some(stamp) = self.info_stamp_current(generation) else {
+            trace!("LEAN4_HX_INFO kind={kind} result=stale");
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&result) else {
+            trace!("LEAN4_HX_INFO kind={kind} result=malformed");
+            return;
+        };
+        let Some(lines) = info_lines(kind, &value, &stamp.position) else {
+            trace!("LEAN4_HX_INFO kind={kind} result=empty");
+            return;
+        };
+        if lines.is_empty() {
+            trace!("LEAN4_HX_INFO kind={kind} result=empty");
+            return;
+        }
+        let mut info = self.cursor_info.lock().expect("cursor info poisoned");
+        if info.stamp.as_ref() != Some(&stamp) {
+            info.stamp = Some(stamp);
+            info.lines.clear();
+        }
+        for line in lines {
+            if !info.lines.contains(&line) {
+                info.lines.push(line);
+            }
+        }
+        trace!("LEAN4_HX_INFO kind={kind} result=ready lines={}", info.lines.len());
+    }
+
+    fn record_hover(&self, generation: usize, result: String) {
+        self.record_info(generation, result, "hover");
+    }
+
+    fn record_signature(&self, generation: usize, result: String) {
+        self.record_info(generation, result, "signature");
+    }
+
+    fn record_inlay(&self, generation: usize, result: String) {
+        self.record_info(generation, result, "inlay");
     }
 
     fn record_navigation(&self, generation: usize, result: String) {
@@ -656,14 +728,32 @@ impl NativeState {
             .expect("goal state poisoned")
             .snapshot()
             .cloned();
-        let Some(snapshot) = snapshot else {
-            return "[]".into();
-        };
-        if snapshot.unavailable.is_some() || snapshot.styled_goals.is_empty() {
+        let info = self.cursor_info.lock().expect("cursor info poisoned").clone();
+        let mut body = snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.unavailable.is_none() && !snapshot.styled_goals.is_empty())
+            .map(|snapshot| {
+                let selected = self.selected_goal.load(Ordering::Acquire);
+                snapshot.styled_lines(selected)
+            })
+            .unwrap_or_default();
+        if !body.is_empty() && !info.lines.is_empty() {
+            body.push(vec![TerminalSpan {
+                text: String::new(),
+                style: crate::correspondence::TerminalStyle::Plain,
+                tags: Vec::new(),
+            }]);
+        }
+        body.extend(info.lines.into_iter().map(|line| {
+            vec![TerminalSpan {
+                text: line,
+                style: crate::correspondence::TerminalStyle::Plain,
+                tags: Vec::new(),
+            }]
+        }));
+        if body.is_empty() {
             return "[]".into();
         }
-        let selected = self.selected_goal.load(Ordering::Acquire);
-        let body = snapshot.styled_lines(selected);
         let lines = crate::correspondence::layout_lines(&body, width);
         let offset = self
             .scroll
@@ -870,6 +960,83 @@ fn file_uri(path: &str) -> String {
     uri
 }
 
+fn position_le(left: &Position, right: &Position) -> bool {
+    left.line < right.line || (left.line == right.line && left.character <= right.character)
+}
+
+fn position_in_range(position: &Position, range: &Range) -> bool {
+    position_le(&range.start, position) && position_le(position, &range.end)
+}
+
+fn collect_info_text(value: &Value, lines: &mut Vec<String>) {
+    match value {
+        Value::String(text) if !text.trim().is_empty() => lines.extend(
+            text.lines()
+                .map(str::trim_end)
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_owned),
+        ),
+        Value::Array(values) => values.iter().for_each(|value| collect_info_text(value, lines)),
+        Value::Object(object) => {
+            for key in ["value", "label", "documentation", "contents"] {
+                if let Some(value) = object.get(key) {
+                    collect_info_text(value, lines);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn info_lines(kind: &str, value: &Value, position: &Position) -> Option<Vec<String>> {
+    let result = value.get("result").unwrap_or(value);
+    if result.is_null() {
+        return None;
+    }
+    if kind == "hover" {
+        if let Some(range) = result
+            .get("range")
+            .and_then(|range| serde_json::from_value::<Range>(range.clone()).ok())
+        {
+            if !position_in_range(position, &range) {
+                return None;
+            }
+        }
+        let mut lines = Vec::new();
+        collect_info_text(result.get("contents")?, &mut lines);
+        return (!lines.is_empty()).then_some(lines);
+    }
+    if kind == "signature" {
+        let mut lines = Vec::new();
+        if let Some(signatures) = result.get("signatures").and_then(Value::as_array) {
+            let active = result
+                .get("activeSignature")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            if let Some(signature) = signatures.get(active).or_else(|| signatures.first()) {
+                collect_info_text(signature.get("label")?, &mut lines);
+                if let Some(documentation) = signature.get("documentation") {
+                    collect_info_text(documentation, &mut lines);
+                }
+            }
+        }
+        return (!lines.is_empty()).then_some(lines);
+    }
+    let mut lines = Vec::new();
+    if let Some(hints) = result.as_array() {
+        for hint in hints {
+            if let Some(label) = hint.get("label") {
+                let mut text = Vec::new();
+                collect_info_text(label, &mut text);
+                if !text.is_empty() {
+                    lines.push(text.join(""));
+                }
+            }
+        }
+    }
+    (!lines.is_empty()).then_some(lines)
+}
+
 /// Construct the Steel FFI module loaded by `#%require-dylib`.
 pub fn build_module() -> FFIModule {
     let mut module = FFIModule::new("dylib/lean4-hx");
@@ -894,6 +1061,9 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-begin-request!", NativeState::begin_request)
         .register_fn("native-cancel-request!", NativeState::cancel_request)
         .register_fn("native-record-callback!", NativeState::record_callback)
+        .register_fn("native-record-hover!", NativeState::record_hover)
+        .register_fn("native-record-signature!", NativeState::record_signature)
+        .register_fn("native-record-inlay!", NativeState::record_inlay)
         .register_fn("native-record-navigation!", NativeState::record_navigation)
         .register_fn("native-record-rpc!", NativeState::record_rpc)
         .register_fn("native-label", NativeState::label)
@@ -970,7 +1140,7 @@ mod tests {
     fn native_state_rejects_stale_goal_after_cancel() {
         let state = NativeState::new();
         state.activate();
-        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
         assert_ne!(generation, 0);
         assert_eq!(state.begin_request("/tmp/Main.lean".into(), 1, 0), 0);
         state.cancel_request();
@@ -990,7 +1160,7 @@ mod tests {
         state.activate();
         assert_eq!(state.styled_lines(36), "[]");
 
-        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 0);
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
         state.record_callback(generation, "null".into());
         assert_eq!(state.styled_lines(36), "[]");
         assert!(state.lines().is_empty());
@@ -1065,5 +1235,47 @@ mod tests {
             state.rpc_goals_request(generation, r#"{"sessionId":"old"}"#.into()),
             "{}"
         );
+    }
+
+    #[test]
+    fn cursor_info_renders_hover_and_inlay_without_a_goal() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        state.record_hover(
+            generation,
+            r#"{"contents":{"kind":"markdown","value":"Nat"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}}"#.into(),
+        );
+        state.record_inlay(
+            generation,
+            r#"[{"position":{"line":0,"character":3},"label":" : Nat"}]"#.into(),
+        );
+        let rendered = state.styled_lines(36);
+        let rendered = serde_json::from_str::<Value>(&rendered).unwrap();
+        let mut text = String::new();
+        for row in rendered.as_array().unwrap() {
+            for span in row.as_array().unwrap() {
+                if let Some(value) = span.get("text").and_then(Value::as_str) {
+                    text.push_str(value);
+                }
+            }
+        }
+        assert!(text.contains("Nat"));
+        assert!(text.contains(": Nat"));
+    }
+
+    #[test]
+    fn cursor_info_rejects_stale_and_out_of_range_hover() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 1, 2);
+        state.record_hover(
+            generation,
+            r#"{"contents":"wrong","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}"#.into(),
+        );
+        assert_eq!(state.styled_lines(36), "[]");
+        state.cancel_request();
+        state.record_hover(generation, r#"{"contents":"stale"}"#.into());
+        assert_eq!(state.styled_lines(36), "[]");
     }
 }
