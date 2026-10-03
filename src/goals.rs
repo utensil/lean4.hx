@@ -197,6 +197,9 @@ impl GoalSnapshot {
         if let Some(reason) = &self.unavailable {
             return format!("Lean unavailable: {reason}");
         }
+        if self.completed {
+            return "🎉 Goal complete".to_owned();
+        }
         let mut text = self.rendered.clone();
         if let Some(term) = &self.term_goal {
             if !text.is_empty() {
@@ -341,6 +344,38 @@ impl GoalState {
         }
         self.snapshot = Some(GoalSnapshot::unavailable(stamp, reason));
         true
+    }
+
+    /// A null plain-goal reply normally means that the cursor is outside a
+    /// proof. When the cursor advanced on the same proof line after a valid
+    /// goal, treat it as the completed-proof transition so the infoview can
+    /// celebrate it without showing an unavailable placeholder.
+    pub fn accept_no_goal(&mut self, generation: u64, reason: impl Into<String>) -> bool {
+        let Some(stamp) = self.active.clone() else {
+            return false;
+        };
+        if stamp.generation != generation {
+            return false;
+        }
+        let completed = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.unavailable.is_none()
+                && snapshot.stamp.uri == stamp.uri
+                && snapshot.stamp.version == stamp.version
+                && snapshot.stamp.position.line == stamp.position.line
+                && stamp.position.character > snapshot.stamp.position.character
+        });
+        if completed {
+            self.accept(GoalSnapshot::from_plain_goal(
+                stamp,
+                PlainGoal {
+                    rendered: String::new(),
+                    goals: Vec::new(),
+                    extra: Default::default(),
+                },
+            ))
+        } else {
+            self.accept_unavailable(generation, reason)
+        }
     }
 
     pub fn invalidate_and_advance(&mut self, reason: impl Into<String>) {
@@ -504,6 +539,24 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0][0].text, "🎉 Goal complete");
         assert_eq!(lines[0][0].style, TerminalStyle::Goal);
+    }
+
+    #[test]
+    fn null_after_progress_on_the_same_proof_line_marks_completion() {
+        let mut state = GoalState::default();
+        let first = state.begin("file:///Main.lean", 1, Position { line: 1, character: 0, extra: Extras::new() });
+        assert!(state.accept(GoalSnapshot::from_plain_goal(
+            first,
+            PlainGoal {
+                rendered: "⊢ n = n".into(),
+                goals: vec!["⊢ n = n".into()],
+                extra: Extras::new(),
+            },
+        )));
+        let second = state.begin("file:///Main.lean", 1, Position { line: 1, character: 3, extra: Extras::new() });
+        assert!(state.accept_no_goal(second.generation, "Lean returned no goal"));
+        assert!(state.snapshot().unwrap().completed);
+        assert_eq!(state.display_text(), "🎉 Goal complete");
     }
 
     #[test]
