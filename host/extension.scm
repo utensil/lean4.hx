@@ -37,6 +37,7 @@
 (define lean4-hx-hooks-installed? #f)
 (define lean4-hx-selection-pending? #f)
 (define lean4-hx-last-file #f)
+(define lean4-hx-session-document #f)
 (define lean4-hx-panel-width 36)
 
 ;; Dynamic components are compositor layers, so Helix gives them the full
@@ -138,6 +139,15 @@
   (set! lean4-hx-last-file (static.cx->current-file))
   (lean4-hx-schedule-refresh!))
 
+(define (lean4-hx-on-focus-lost document)
+  ;; This hook carries the document that lost focus, so release through that
+  ;; document's language-server client before a new buffer becomes current.
+  (if (and lean4-hx-session-document
+           (= (editor.doc-id->usize document)
+              (editor.doc-id->usize lean4-hx-session-document)))
+      (lean4-hx-rpc-release-for-document! document)
+      #f))
+
 (define (lean4-hx-on-post-command command-name)
   ;; Helix does not expose a language-server restart hook. Reset the owned
   ;; Lean RPC session after the user invokes the restart command so the next
@@ -154,18 +164,20 @@
           #t)
         #f)))
 
-(define (lean4-hx-rpc-release!)
+(define (lean4-hx-rpc-release-for-document! document)
   (let ([request (string->jsexpr (native-rpc-release-request lean4-hx-native))])
-    (if (hash-contains? request 'sessionId)
-        (begin
-          ;; Teardown must not block a document-close hook when the language
-          ;; server is being restarted or has already exited.
-          (hx.enqueue-thread-local-callback-with-delay
-           0
-           (lambda ()
-             (hx.send-lsp-notification "lean" "$/lean/rpc/release" request)))
-          #t)
+    (if (and document (hash-contains? request 'sessionId))
+        (with-handler
+          (lambda (_) #f)
+          (begin
+            (hx.send-lsp-notification-for-document
+             document "lean" "$/lean/rpc/release" request)
+            (set! lean4-hx-session-document #f)
+            #t))
         #f)))
+
+(define (lean4-hx-rpc-release!)
+  (lean4-hx-rpc-release-for-document! lean4-hx-session-document))
 
 (define (lean4-hx-request-term-goal!)
   (let ([generation (native-generation lean4-hx-native)])
@@ -196,7 +208,7 @@
           (hx.set-warning! "lean4.hx: term goal unavailable")))))
 
 (define (lean4-hx-on-close closed-event)
-  (lean4-hx-rpc-release!)
+  (lean4-hx-rpc-release-for-document! (editor.doc-closed-id closed-event))
   (native-record-close! lean4-hx-native))
 
 (define (lean4-hx-on-lean-info generation result)
@@ -269,7 +281,9 @@
 (define (lean4-hx-request-lean-info!)
   (let ([path (static.cx->current-file)])
     (if path
-        (let* ([line (static.get-current-line-number)]
+        (let* ([view (editor.editor-focus)]
+               [document (editor.editor->doc-id view)]
+               [line (static.get-current-line-number)]
                [character (static.get-current-line-character "utf-16")]
                [uri (native-file-uri path)]
                [params (hash "textDocument" (hash "uri" uri)
@@ -279,6 +293,7 @@
           (let ([generation (native-begin-request! lean4-hx-native path line character)])
             (if (> generation 0)
                 (begin
+                  (set! lean4-hx-session-document document)
                   (hx.send-lsp-command "lean" "$/lean/plainGoal" params
                                        (lambda (result)
                                          (lean4-hx-on-lean-info generation result)))
@@ -460,6 +475,7 @@
               (editor.register-hook 'document-changed lean4-hx-on-document-change)
               (editor.register-hook 'document-opened lean4-hx-on-open)
               (editor.register-hook 'document-closed lean4-hx-on-close)
+              (editor.register-hook 'document-focus-lost lean4-hx-on-focus-lost)
               (editor.register-hook 'post-command lean4-hx-on-post-command)
               (set! lean4-hx-hooks-installed? #t))
             #f)
@@ -485,4 +501,5 @@
   (set! lean4-hx-installed? #f)
   (set! lean4-hx-selection-pending? #f)
   (set! lean4-hx-last-file #f)
+  (set! lean4-hx-session-document #f)
   "lean4.hx component removed")
