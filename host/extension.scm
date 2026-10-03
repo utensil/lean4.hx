@@ -36,6 +36,7 @@
 (define lean4-hx-installed? #f)
 (define lean4-hx-hooks-installed? #f)
 (define lean4-hx-selection-pending? #f)
+(define lean4-hx-last-file #f)
 (define lean4-hx-panel-width 36)
 
 ;; Dynamic components are compositor layers, so Helix gives them the full
@@ -100,6 +101,18 @@
       #f))
 
 (define (lean4-hx-on-selection view)
+  ;; Helix does not emit document-opened when switching back to an already
+  ;; loaded buffer. Detect that URI transition here so a Lean RPC session can
+  ;; never be reused for a different document.
+  (let ([path (static.cx->current-file)])
+    (if (and path
+             (or (not lean4-hx-last-file)
+                 (not (string=? path lean4-hx-last-file))))
+        (begin
+          (lean4-hx-rpc-release!)
+          (native-record-open! lean4-hx-native)
+          (set! lean4-hx-last-file path))
+        #f))
   (native-record-selection! lean4-hx-native)
   ;; Cancel immediately; the delayed callback reads the latest cursor.
   (if (native-active? lean4-hx-native)
@@ -117,7 +130,12 @@
       #f))
 
 (define (lean4-hx-on-open document)
+  ;; A document switch invalidates the Rust-owned cursor/session state. Release
+  ;; the previous Lean RPC session before that state is replaced so switching
+  ;; buffers cannot leak opaque references on the server.
+  (lean4-hx-rpc-release!)
   (native-record-open! lean4-hx-native)
+  (set! lean4-hx-last-file (static.cx->current-file))
   (lean4-hx-schedule-refresh!))
 
 (define (lean4-hx-on-post-command command-name)
@@ -466,4 +484,5 @@
   (lean4-hx-apply-panel-layout! 0)
   (set! lean4-hx-installed? #f)
   (set! lean4-hx-selection-pending? #f)
+  (set! lean4-hx-last-file #f)
   "lean4.hx component removed")

@@ -142,6 +142,11 @@ send "j"
 sleep 2
 need "LEAN4_HX_REQUEST line="
 need "LEAN4_HX_GOAL_AVAILABLE"
+send ":open Term.lean"
+send "\\r"
+need_both "LEAN4_HX_RPC action=release refs=" "LEAN4_HX_OPEN"
+send ":open Main.lean"
+send "\\r"
 send ":buffer-close!"
 send "\\r"
 need "LEAN4_HX_CLOSE"
@@ -155,8 +160,8 @@ sleep 2
 need "LEAN4_HX_GOAL_AVAILABLE"
 send ":open Term.lean"
 send "\\r"
-need "LEAN4_HX_OPEN"
 sleep 2
+need "LEAN4_HX_RPC action=connect"
 send "llllllllllllllllllll"
 sleep 2
 need "LEAN4_HX_REQUEST line=0 character=20"
