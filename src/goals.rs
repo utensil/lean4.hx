@@ -353,7 +353,11 @@ impl GoalState {
             self.completion_candidate = None;
             return self.accept_unavailable(generation, "Lean reported an error");
         }
-        self.accept(GoalSnapshot::from_plain_goal(stamp, goal))
+        let snapshot = GoalSnapshot::from_plain_goal(stamp, goal);
+        if allow_completion && snapshot.completed {
+            return self.accept_completed(snapshot);
+        }
+        self.accept(snapshot)
     }
 
     pub fn invalidate(&mut self, reason: impl Into<String>) {
@@ -375,6 +379,15 @@ impl GoalState {
             return false;
         }
         self.snapshot = Some(GoalSnapshot::unavailable(stamp, reason));
+        true
+    }
+
+    pub fn accept_completed(&mut self, snapshot: GoalSnapshot) -> bool {
+        if !snapshot.completed || self.active.as_ref() != Some(&snapshot.stamp) {
+            return false;
+        }
+        self.completion_candidate = None;
+        self.snapshot = Some(snapshot);
         true
     }
 
@@ -702,14 +715,14 @@ mod tests {
                 extra: Extras::new(),
             },
         );
-        assert!(state.accept_plain_goal(
-            solved.generation,
+        assert!(state.accept(GoalSnapshot::from_plain_goal(
+            solved,
             PlainGoal {
                 rendered: "no goals".into(),
                 goals: Vec::new(),
                 extra: Extras::new(),
             },
-        ));
+        )));
         assert!(!state.snapshot().unwrap().completed);
         let after = state.begin(
             "file:///Main.lean",
