@@ -126,6 +126,19 @@ impl NativeState {
         if !self.is_active() {
             return;
         }
+        // Helix may report the restart command more than once. Once the first
+        // callback has released the session and invalidated pending work, a
+        // duplicate notification must not advance generations again.
+        let has_session = self
+            .rpc_session
+            .lock()
+            .expect("rpc state poisoned")
+            .is_some();
+        let has_pending = self.request_inflight.load(Ordering::Acquire)
+            || self.action_inflight.load(Ordering::Acquire);
+        if !has_session && !has_pending {
+            return;
+        }
         self.clear_rpc_session();
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.request_inflight.store(false, Ordering::Release);
@@ -1316,6 +1329,9 @@ mod tests {
             state.rpc_goals_request(generation, r#"{"sessionId":"old"}"#.into()),
             "{}"
         );
+        let reset_generation = state.generation_number();
+        state.reset_rpc_after_server_restart();
+        assert_eq!(state.generation_number(), reset_generation);
     }
 
     #[test]
