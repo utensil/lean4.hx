@@ -8,7 +8,7 @@ fixture=$repo_root/tests/host/project
 host_tmp=${TMPDIR:-/tmp}
 helix_dir=${HOST_HELIX_DIR:-$host_tmp/lean4hx-helix}
 steel_dir=${HOST_STEEL_DIR:-$host_tmp/lean4hx-steel}
-expected_helix=5aad4d7f1cedf31dc7863928c519d93b0f697839
+expected_helix=8bca02cbac15fe21a331d95dae24f42c87fa28e6
 expected_steel=24cd21598c091fb88bc10a6375a1ded25e677c37
 
 [ "$(git -C "$helix_dir" rev-parse HEAD)" = "$expected_helix" ] || exit 1

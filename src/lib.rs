@@ -797,7 +797,7 @@ impl NativeState {
             .expect("navigation state poisoned")
             .clone();
         let refs = self.rpc_refs.lock().expect("rpc state poisoned").clone();
-        trace!("LEAN4_HX_RPC action=release refs={}", refs.len());
+        trace!("LEAN4_HX_RPC action=release refs={} uri={}", refs.len(), uri);
         self.clear_rpc_session();
         serde_json::json!({"uri": uri, "sessionId": session, "refs": refs}).to_string()
     }
