@@ -33,14 +33,14 @@
 (define lean4-hx-installed? #f)
 (define lean4-hx-hooks-installed? #f)
 (define lean4-hx-selection-pending? #f)
-(define lean4-hx-panel-height 8)
+(define lean4-hx-panel-width 36)
 
 ;; Dynamic components are compositor layers, so Helix gives them the full
-;; terminal rectangle. Reserve a bottom editor strip before rendering the
+;; terminal rectangle. Reserve a right editor strip before rendering the
 ;; component; this keeps goal text in its own pane instead of painting over
 ;; the source buffer.
-(define (lean4-hx-apply-panel-layout! height)
-  (editor.set-editor-clip-bottom! height))
+(define (lean4-hx-apply-panel-layout! width)
+  (editor.set-editor-clip-right! width))
 
 (define (lean4-hx-expand-unicode!)
   (let ([path (static.cx->current-file)])
@@ -286,26 +286,27 @@
                 (hx.set-warning! "lean4.hx: navigation target range unavailable"))))))))
 
 (define (lean4-hx-render state area frame)
-  (let* ([height (min lean4-hx-panel-height (components.area-height area))]
-         [top (+ (components.area-y area)
-                 (- (components.area-height area) height))]
-         [panel (components.area (components.area-x area)
-                                 top
-                                 (components.area-width area)
-                                 height)]
-         [row top]
-         [last-row (+ top height)])
+  (let* ([width (min lean4-hx-panel-width (components.area-width area))]
+         [left (+ (components.area-x area)
+                  (- (components.area-width area) width))]
+         [panel (components.area left
+                                 (components.area-y area)
+                                 width
+                                 (components.area-height area))]
+         [row (components.area-y panel)]
+         [last-row (+ (components.area-y panel)
+                      (components.area-height panel))])
     ;; Clear the reserved rectangle before drawing shorter goal responses.
     (components.buffer/clear-with frame panel (components.style))
     (if (< row last-row)
         (components.frame-set-string! frame
-                                      (components.area-x area)
+                                      (components.area-x panel)
                                       row
                                       (car (native-lines state))
                                       (components.style-with-bold (components.style))))
     (set! row (+ row 1))
     (let ([styled (string->jsexpr
-                   (native-styled-lines state (components.area-width area)))])
+                   (native-styled-lines state (components.area-width panel)))])
       (for-each
        (lambda (line)
          (if (< row last-row)
@@ -325,7 +326,7 @@
                                 (components.style-fg (components.style) components.Color/Red)]
                                [else (components.style)])])
                   (components.frame-set-string!
-                   frame (+ (components.area-x area) (exact (hash-ref span 'column)))
+                   frame (+ (components.area-x panel) (exact (hash-ref span 'column)))
                    row (hash-ref span 'text) style)))
               line)
              #f)
@@ -386,7 +387,7 @@
                                           lean4-hx-render
                                           (hash "handle_event"
                                                 lean4-hx-handle-event)))
-        (lean4-hx-apply-panel-layout! lean4-hx-panel-height)
+        (lean4-hx-apply-panel-layout! lean4-hx-panel-width)
         (hx.push-component! lean4-hx-component)
         (set! lean4-hx-installed? #t)
         (lean4-hx-status "lean4.hx installed")
