@@ -21,7 +21,7 @@ use steel::{
 };
 
 use crate::{
-    correspondence::{first_location, same_document, TerminalSpan},
+    correspondence::{first_location, same_document, terminal_spans, TerminalSpan},
     goals::GoalState,
     protocol::{Extras, PlainGoal, Position, Range},
 };
@@ -321,7 +321,7 @@ impl NativeState {
                 self.goal_state
                     .lock()
                     .expect("goal state poisoned")
-                    .invalidate("Lean returned no goal");
+                    .accept_unavailable(generation as u64, "Lean returned no goal");
                 "Lean goal unavailable".to_owned()
             } else {
                 let accepted = serde_json::from_str::<Value>(&result)
@@ -710,14 +710,50 @@ impl NativeState {
             return;
         }
         let value = value.get("result").unwrap_or(&value);
-        let Some(goal) = value.get("goal").and_then(Value::as_str) else {
+        let Some(tagged_type) = value
+            .get("type")
+            .and_then(|value| serde_json::from_value::<crate::protocol::TaggedText>(value.clone()).ok())
+        else {
             self.action_inflight.store(false, Ordering::Release);
             trace!("LEAN4_HX_RPC action=term-goal unavailable");
             return;
         };
+        let mut lines = Vec::new();
+        let mut current = String::new();
+        for span in terminal_spans(&tagged_type) {
+            for part in span.text.split_inclusive('\n') {
+                let has_newline = part.ends_with('\n');
+                current.push_str(part.trim_end_matches('\n'));
+                if has_newline {
+                    if !current.trim().is_empty() {
+                        lines.push(std::mem::take(&mut current));
+                    } else {
+                        current.clear();
+                    }
+                }
+            }
+        }
+        if !current.trim().is_empty() {
+            lines.push(current);
+        }
+        if lines.is_empty() {
+            self.action_inflight.store(false, Ordering::Release);
+            trace!("LEAN4_HX_RPC action=term-goal unavailable");
+            return;
+        }
+        let mut refs = Vec::new();
+        Self::collect_rpc_refs(value, &mut refs);
+        if !refs.is_empty() {
+            let mut owned = self.rpc_refs.lock().expect("rpc state poisoned");
+            for reference in refs {
+                if !owned.iter().any(|existing| existing == &reference) {
+                    owned.push(reference);
+                }
+            }
+        }
         let mut info = self.cursor_info.lock().expect("cursor info poisoned");
         info.stamp = Some(stamp);
-        info.lines = goal.lines().map(str::to_owned).collect();
+        info.lines = lines;
         self.action_inflight.store(false, Ordering::Release);
         trace!("LEAN4_HX_RPC action=term-goal result=ready lines={}", info.lines.len());
     }
@@ -1267,6 +1303,27 @@ mod tests {
     }
 
     #[test]
+    fn no_goal_keeps_cursor_info_callbacks_current() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        state.record_callback(generation, "null".into());
+        state.record_hover(
+            generation,
+            r#"{"contents":"Nat","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}}"#.into(),
+        );
+        let rendered = serde_json::from_str::<Value>(&state.styled_lines(36)).unwrap();
+        let text = rendered
+            .as_array()
+            .into_iter()
+            .flat_map(|rows| rows.iter())
+            .flat_map(|row| row.as_array().into_iter().flatten())
+            .filter_map(|span| span.get("text").and_then(Value::as_str))
+            .collect::<String>();
+        assert!(text.contains("Nat"));
+    }
+
+    #[test]
     fn document_change_invalidates_callback_and_advances_version() {
         let state = NativeState::new();
         state.activate();
@@ -1349,10 +1406,18 @@ mod tests {
         assert_eq!(state.rpc_term_goal_request(generation), "{}");
         state.record_rpc_action(
             generation,
-            r#"{"result":{"goal":"x : Nat\n⊢ x = x"}}"#.into(),
+            r#"{"result":{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}},"term":{"p":"1"},"type":{"tag":[{"info":{"p":"2"},"subexprPos":"/"},{"text":"Nat"}]},"hyps":[],"ctx":{"p":"3"}}}"#.into(),
         );
         let rendered = state.styled_lines(36);
-        assert!(rendered.contains("x"));
+        let rendered = serde_json::from_str::<Value>(&rendered).unwrap();
+        let text = rendered
+            .as_array()
+            .into_iter()
+            .flat_map(|rows| rows.iter())
+            .flat_map(|row| row.as_array().into_iter().flatten())
+            .filter_map(|span| span.get("text").and_then(Value::as_str))
+            .collect::<String>();
+        assert!(text.contains("Nat"));
     }
 
     #[test]
@@ -1363,7 +1428,10 @@ mod tests {
         state.record_rpc(generation, r#"{"sessionId":"old"}"#.into());
         state.reset_rpc_after_server_restart();
         assert_eq!(state.rpc_term_goal_request(generation), "{}");
-        state.record_rpc_action(generation, r#"{"result":{"goal":"stale"}}"#.into());
+        state.record_rpc_action(
+            generation,
+            r#"{"result":{"type":{"text":"stale"}}}"#.into(),
+        );
         assert_eq!(state.styled_lines(36), "[]");
     }
 
