@@ -24,7 +24,7 @@ helix_config=$config_dir/helix
 steel_home=$run_dir/steel
 project_dir=$run_dir/project
 mkdir -p "$helix_config" "$steel_home/cogs" "$steel_home/native" "$project_dir"
-cp -R "$helix_dir/runtime/." "$runtime_dir/"
+cp -RP "$helix_dir/runtime/." "$runtime_dir/"
 cp "$fixture/Main.lean" "$fixture/Second.lean" "$fixture/lakefile.toml" "$fixture/.lean-toolchain" "$project_dir/"
 cp "$repo_root/host/extension.scm" "$steel_home/cogs/lean4-hx.scm"
 cp "$repo_root/host/extension.scm" "$helix_config/lean4-hx.scm"
