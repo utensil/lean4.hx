@@ -334,11 +334,24 @@ impl GoalState {
     }
 
     pub fn accept_plain_goal(&mut self, generation: u64, goal: PlainGoal) -> bool {
+        self.accept_plain_goal_with_completion(generation, goal, true)
+    }
+
+    pub fn accept_plain_goal_with_completion(
+        &mut self,
+        generation: u64,
+        goal: PlainGoal,
+        allow_completion: bool,
+    ) -> bool {
         let Some(stamp) = self.active.clone() else {
             return false;
         };
         if stamp.generation != generation {
             return false;
+        }
+        if !allow_completion && goal.goals.is_empty() {
+            self.completion_candidate = None;
+            return self.accept_unavailable(generation, "Lean reported an error");
         }
         self.accept(GoalSnapshot::from_plain_goal(stamp, goal))
     }
@@ -365,16 +378,33 @@ impl GoalState {
         true
     }
 
+    pub fn clear_completion_candidate(&mut self) {
+        self.completion_candidate = None;
+    }
+
     /// A null plain-goal reply normally means that the cursor is outside a
     /// proof. Treat it as a completed-proof transition only after a preceding
     /// empty response was followed by a later cursor position with no goal.
     /// This avoids celebrating a solved bullet while sibling goals remain.
     pub fn accept_no_goal(&mut self, generation: u64, reason: impl Into<String>) -> bool {
+        self.accept_no_goal_with_completion(generation, reason, true)
+    }
+
+    pub fn accept_no_goal_with_completion(
+        &mut self,
+        generation: u64,
+        reason: impl Into<String>,
+        allow_completion: bool,
+    ) -> bool {
         let Some(stamp) = self.active.clone() else {
             return false;
         };
         if stamp.generation != generation {
             return false;
+        }
+        if !allow_completion {
+            self.completion_candidate = None;
+            return self.accept_unavailable(generation, reason);
         }
         let completed = self.completion_candidate.as_ref().is_some_and(|candidate| {
             candidate.uri == stamp.uri
@@ -598,6 +628,49 @@ mod tests {
             state.display_text(),
             "Lean unavailable: Lean returned no goal"
         );
+    }
+
+    #[test]
+    fn diagnostic_rejects_empty_goal_completion() {
+        let mut state = GoalState::default();
+        let first = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 0,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept_plain_goal_with_completion(
+            first.generation,
+            PlainGoal {
+                rendered: "⊢ p".into(),
+                goals: vec!["⊢ p".into()],
+                extra: Extras::new(),
+            },
+            true,
+        ));
+        let second = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 3,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept_plain_goal_with_completion(
+            second.generation,
+            PlainGoal {
+                rendered: String::new(),
+                goals: Vec::new(),
+                extra: Extras::new(),
+            },
+            false,
+        ));
+        assert!(!state.display_text().contains("Goal complete"));
+        assert!(state.display_text().contains("Lean unavailable"));
     }
 
     #[test]

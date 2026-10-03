@@ -9,12 +9,12 @@
 (#%require-dylib "liblean4_hx"
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-document-change! native-record-open!
-           native-record-close! native-reset-rpc-after-server-restart! native-record-request! native-record-callback!
+           native-record-close! native-reset-rpc-after-server-restart! native-record-request! native-record-callback! native-record-callback-with-completion!
            native-record-hover! native-record-inlay! native-record-navigation! native-record-navigation-applied! native-record-signature!
            native-begin-request! native-cancel-request!
            native-generation native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
            native-rpc-term-goal-request native-record-rpc-action!
-           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-info-lines native-selected-text native-selected-info-text native-summary native-file-uri
+           native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-record-rpc-with-completion! native-label native-styled-lines native-info-lines native-selected-text native-selected-info-text native-summary native-file-uri
            native-goal-line-count native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
            native-unicode-replacement native-unicode-cursor native-utf16-to-chars
@@ -130,6 +130,15 @@
 
 (define (lean4-hx-status prefix)
   (hx.set-status! (string-append prefix ": " (lean4-hx-summary))))
+
+(define (lean4-hx-current-has-errors?)
+  ;; An empty goal list can solve one bullet while sibling goals remain.  Do
+  ;; not celebrate an empty result that arrived with a document error (for
+  ;; example `apply h`).
+  (let* ([view (editor.editor-focus)]
+         [document (editor.editor->doc-id view)]
+         [counts (editor.editor-document-diagnostic-counts document)])
+    (and counts (> (list-ref counts 3) 0))))
 
 (define (lean4-hx-schedule-refresh!)
   ;; Coalesce open, edit, and selection events.  The callback is guarded by
@@ -284,8 +293,9 @@
 (define (lean4-hx-on-lean-info generation result)
   (if (native-active? lean4-hx-native)
       (begin
-        (native-record-callback! lean4-hx-native generation
-                                 (value->jsexpr-string result)))
+        (native-record-callback-with-completion!
+         lean4-hx-native generation (value->jsexpr-string result)
+         (not (lean4-hx-current-has-errors?))))
       #f))
 
 (define (lean4-hx-on-definition generation result)
@@ -342,8 +352,10 @@
                        (hx.send-lsp-command
                         "lean" "$/lean/rpc/call" request
                         (lambda (reply)
-                          (native-record-rpc! lean4-hx-native generation
-                                               (value->jsexpr-string reply))))
+                          (native-record-rpc-with-completion!
+                           lean4-hx-native generation
+                           (value->jsexpr-string reply)
+                           (not (lean4-hx-current-has-errors?)))))
                        #f))))
               #f)))
       #f))

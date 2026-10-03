@@ -331,13 +331,26 @@ impl NativeState {
     }
 
     fn record_callback(&self, generation: usize, result: String) {
+        self.record_callback_with_completion(generation, result, true);
+    }
+
+    fn record_callback_with_completion(
+        &self,
+        generation: usize,
+        result: String,
+        allow_completion: bool,
+    ) {
         if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
             self.callbacks.fetch_add(1, Ordering::Relaxed);
             let mut last = self.last_callback.lock().expect("callback state poisoned");
             *last = "reply".to_owned();
             let goal = if result == "null" {
                 let mut state = self.goal_state.lock().expect("goal state poisoned");
-                state.accept_no_goal(generation as u64, "Lean returned no goal");
+                state.accept_no_goal_with_completion(
+                    generation as u64,
+                    "Lean returned no goal",
+                    allow_completion,
+                );
                 state.display_text()
             } else {
                 let accepted = serde_json::from_str::<Value>(&result)
@@ -347,7 +360,11 @@ impl NativeState {
                         self.goal_state
                             .lock()
                             .expect("goal state poisoned")
-                            .accept_plain_goal(generation as u64, plain)
+                            .accept_plain_goal_with_completion(
+                                generation as u64,
+                                plain,
+                                allow_completion,
+                            )
                     })
                     .unwrap_or(false);
                 if !accepted {
@@ -575,6 +592,15 @@ impl NativeState {
     }
 
     fn record_rpc(&self, generation: usize, result: String) {
+        self.record_rpc_with_completion(generation, result, true);
+    }
+
+    fn record_rpc_with_completion(
+        &self,
+        generation: usize,
+        result: String,
+        allow_completion: bool,
+    ) {
         if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
             let Ok(value) = serde_json::from_str::<Value>(&result) else {
                 trace!("LEAN4_HX_RPC action=reply");
@@ -608,7 +634,13 @@ impl NativeState {
                         Self::collect_rpc_refs(&value, &mut refs);
                         *self.rpc_refs.lock().expect("rpc state poisoned") = refs;
                         let mut state = self.goal_state.lock().expect("goal state poisoned");
-                        if state.accept(snapshot) {
+                        let accepted = if !allow_completion && snapshot.completed {
+                            state.clear_completion_candidate();
+                            state.accept_unavailable(generation as u64, "Lean reported an error")
+                        } else {
+                            state.accept(snapshot)
+                        };
+                        if accepted {
                             let text = state.display_text();
                             *self.goal.lock().expect("goal state poisoned") = text.clone();
                             self.request_inflight.store(false, Ordering::Release);
@@ -1236,6 +1268,10 @@ pub fn build_module() -> FFIModule {
         .register_fn("native-begin-request!", NativeState::begin_request)
         .register_fn("native-cancel-request!", NativeState::cancel_request)
         .register_fn("native-record-callback!", NativeState::record_callback)
+        .register_fn(
+            "native-record-callback-with-completion!",
+            NativeState::record_callback_with_completion,
+        )
         .register_fn("native-record-hover!", NativeState::record_hover)
         .register_fn("native-record-signature!", NativeState::record_signature)
         .register_fn("native-record-inlay!", NativeState::record_inlay)
@@ -1245,6 +1281,10 @@ pub fn build_module() -> FFIModule {
             NativeState::record_navigation_applied,
         )
         .register_fn("native-record-rpc!", NativeState::record_rpc)
+        .register_fn(
+            "native-record-rpc-with-completion!",
+            NativeState::record_rpc_with_completion,
+        )
         .register_fn("native-record-rpc-action!", NativeState::record_rpc_action)
         .register_fn("native-label", NativeState::label)
         .register_fn("native-lines", NativeState::lines)
