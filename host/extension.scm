@@ -338,9 +338,6 @@
                   (hx.send-lsp-command "lean" "$/lean/plainGoal" params
                                        (lambda (result)
                                          (lean4-hx-on-lean-info generation result)))
-                  (hx.send-lsp-command "lean" "textDocument/hover" params
-                                       (lambda (result)
-                                         (lean4-hx-on-hover generation result)))
                   (hx.send-lsp-command "lean" "textDocument/signatureHelp" params
                                        (lambda (result)
                                          (lean4-hx-on-signature generation result)))
@@ -487,7 +484,8 @@
                                  (string-append lean4-hx-leader-label " a  adaptive layout") style)
     (lean4-hx-render-panel-text! frame panel 7
                                  (string-append lean4-hx-leader-label " y/Y  copy/register") style)
-    (lean4-hx-render-panel-text! frame panel 8 "Esc  close help" style)))
+    (lean4-hx-render-panel-text! frame panel 8 "K  hover documentation (stock popup)" style)
+    (lean4-hx-render-panel-text! frame panel 9 "Esc  close help" style)))
 
 (define (lean4-hx-report-selection!)
   (if (and lean4-hx-selection-start lean4-hx-selection-end)

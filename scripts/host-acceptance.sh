@@ -255,10 +255,10 @@ grep -F 'info: 42' "$project_dir/Main.lean" >/dev/null || {
     echo "code action did not update the guard message; preserved evidence at $run_dir" >&2
     exit 1
 }
-grep -F 'LEAN4_HX_INFO kind=hover result=ready lines=' "$pty_log" >/dev/null || {
-    echo "hover projection did not produce a visible result; preserved evidence at $run_dir" >&2
+if grep -F 'LEAN4_HX_INFO kind=hover' "$pty_log" >/dev/null; then
+    echo "automatic hover leaked into the persistent information surface; preserved evidence at $run_dir" >&2
     exit 1
-}
+fi
 
 echo "host PTY acceptance passed"
 echo "Helix: $(git -C "$helix_dir" rev-parse HEAD)"
