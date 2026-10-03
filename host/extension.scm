@@ -12,7 +12,8 @@
            native-record-close! native-reset-rpc-after-server-restart! native-record-request! native-record-callback!
            native-record-hover! native-record-inlay! native-record-navigation! native-record-navigation-applied! native-record-signature!
            native-begin-request! native-cancel-request!
-           native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
+           native-generation native-generation-current? native-rpc-goals-request native-rpc-session-current? native-rpc-session-goals-request
+           native-rpc-term-goal-request native-record-rpc-action!
            native-rpc-keepalive-request native-rpc-release-request native-record-rpc! native-label native-styled-lines native-summary native-file-uri
            native-focused? native-set-focused! native-scroll! native-next-goal! native-previous-goal!
            native-unicode-start native-unicode-end
@@ -24,6 +25,7 @@
 (provide lean4-hx-install!)
 (provide lean4-hx-remove-component!)
 (provide lean4-hx-request-lean-info!)
+(provide lean4-hx-request-term-goal!)
 (provide lean4-hx-code-action!)
 (provide lean4-hx-summary)
 (provide lean4-hx-native)
@@ -146,6 +148,18 @@
              (hx.send-lsp-notification "lean" "$/lean/rpc/release" request)))
           #t)
         #f)))
+
+(define (lean4-hx-request-term-goal!)
+  (let ([generation (native-generation lean4-hx-native)])
+    (let ([request (string->jsexpr
+                    (native-rpc-term-goal-request lean4-hx-native generation))])
+      (if (hash-contains? request 'sessionId)
+          (hx.send-lsp-command
+           "lean" "$/lean/rpc/call" request
+           (lambda (result)
+             (native-record-rpc-action! lean4-hx-native generation
+                                        (value->jsexpr-string result))))
+          (hx.set-warning! "lean4.hx: term goal unavailable")))))
 
 (define (lean4-hx-on-close closed-event)
   (lean4-hx-rpc-release!)
@@ -388,6 +402,10 @@
    [(and (components.key-event-char event)
          (equal? (components.key-event-char event) #\p))
     (native-previous-goal! state)
+    components.event-result/consume]
+   [(and (components.key-event-char event)
+         (equal? (components.key-event-char event) #\t))
+    (lean4-hx-request-term-goal!)
     components.event-result/consume]
    [else components.event-result/ignore]))
 
