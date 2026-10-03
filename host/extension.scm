@@ -280,9 +280,20 @@
               #f)))
       #f))
 
+(define (lean4-hx-lean-ready?)
+  (let ([ready #f])
+    (for-each
+     (lambda (client)
+       (if (and (string=? (hx.lsp-client-name client) "lean")
+                (hx.lsp-client-initialized? client))
+           (set! ready #t)
+           #f))
+     (hx.get-active-lsp-clients))
+    ready))
+
 (define (lean4-hx-request-lean-info!)
   (let ([path (static.cx->current-file)])
-    (if path
+    (if (and path (lean4-hx-lean-ready?))
         (let* ([view (editor.editor-focus)]
                [document (editor.editor->doc-id view)]
                [line (static.get-current-line-number)]
