@@ -299,6 +299,29 @@ def main() -> int:
                 report["checks"]["ordinary_lsp_baseline"][key]
                 for key in ("hover", "completion", "definition", "definitionCrossFile", "references", "codeAction", "inlayHint", "signatureHelp", "documentSymbol", "rename")
             )
+            same_file_items = baseline["definition"] if isinstance(baseline["definition"], list) else []
+            same_file_ok = any(
+                isinstance(item, dict)
+                and item.get("uri") == uri
+                and item.get("range") == {
+                    "start": {"line": 2, "character": 4},
+                    "end": {"line": 2, "character": 10},
+                }
+                for item in same_file_items
+            )
+            cross_file_items = baseline["crossFileDefinition"] if isinstance(baseline["crossFileDefinition"], list) else []
+            cross_file_ok = any(
+                isinstance(item, dict)
+                and item.get("targetUri", item.get("uri", "")).endswith("/src/lean/Init/Prelude.lean")
+                and item.get("targetRange", item.get("range", {})) == {
+                    "start": {"line": 1241, "character": 10},
+                    "end": {"line": 1241, "character": 13},
+                }
+                for item in cross_file_items
+            )
+            report["checks"]["ordinary_lsp_baseline"]["sameFileExact"] = same_file_ok
+            report["checks"]["ordinary_lsp_baseline"]["crossFileExact"] = cross_file_ok
+            report["checks"]["ordinary_lsp_baseline"]["passed"] = report["checks"]["ordinary_lsp_baseline"]["passed"] and same_file_ok and cross_file_ok
             connect = c.request("$/lean/rpc/connect", {"uri": uri})
             session_id = connect.get("sessionId") if isinstance(connect, dict) else None
             rpc_params = {"textDocument": {"uri": uri}, "position": position, "sessionId": session_id, "method": "Lean.Widget.getInteractiveGoals", "params": goal_params}
