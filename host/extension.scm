@@ -536,7 +536,7 @@
                                  (string-append lean4-hx-leader-label " a  adaptive layout") style)
     (lean4-hx-render-panel-text! frame panel 7
                                  (string-append lean4-hx-leader-label " y/Y  copy/register") style)
-    (lean4-hx-render-panel-text! frame panel 8 "K  hover documentation (stock popup)" style)
+    (lean4-hx-render-panel-text! frame panel 8 "source Space k  hover documentation" style)
     (lean4-hx-render-panel-text! frame panel 9 "Esc  close help" style)))
 
 (define (lean4-hx-report-selection!)

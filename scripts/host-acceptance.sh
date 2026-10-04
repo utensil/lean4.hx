@@ -146,6 +146,7 @@ send "l"
 send "?"
 sleep 1
 need "Lean panel help"
+need "source Space k  hover documentation"
 send "\\033"
 sleep 1
 send " "
