@@ -47,6 +47,7 @@ pub enum ActionError {
     Unsupported(String),
     InvalidRange(String),
     MissingDocument(String),
+    DuplicateDocument(String),
 }
 
 pub fn validate_text_edit(edit: &TextEdit, current: &RequestStamp) -> Result<(), ActionError> {
@@ -119,6 +120,9 @@ pub fn apply_workspace_transaction(
 ) -> Result<BTreeMap<String, String>, ActionError> {
     let mut result = BTreeMap::new();
     for change in changes {
+        if result.contains_key(&change.uri) {
+            return Err(ActionError::DuplicateDocument(change.uri.clone()));
+        }
         let current = documents
             .get(&change.uri)
             .ok_or_else(|| ActionError::MissingDocument(change.uri.clone()))?;
@@ -640,6 +644,12 @@ mod tests {
         assert_eq!(
             apply_workspace_transaction(&documents, &stale),
             Err(ActionError::VersionMismatch)
+        );
+
+        let duplicate = [changes[0].clone(), changes[0].clone()];
+        assert_eq!(
+            apply_workspace_transaction(&documents, &duplicate),
+            Err(ActionError::DuplicateDocument("file:///Main.lean".into()))
         );
     }
 
