@@ -1561,6 +1561,21 @@ mod tests {
     }
 
     #[test]
+    fn rpc_session_isolated_when_document_changes() {
+        let state = NativeState::new();
+        state.activate();
+        let first = state.begin_request("/tmp/RootA/Main.lean".into(), 1, 0);
+        state.record_rpc(first, r#"{"sessionId":"root-a"}"#.into());
+        assert!(state.rpc_session_current(first));
+
+        state.record_opened();
+        let second = state.begin_request("/tmp/RootB/Main.lean".into(), 1, 0);
+        assert_ne!(first, second);
+        assert!(!state.rpc_session_current(first));
+        assert_eq!(state.rpc_goals_request(first, r#"{"sessionId":"root-a"}"#.into()), "{}");
+    }
+
+    #[test]
     fn cursor_info_renders_hover_and_inlay_in_the_information_surface() {
         let state = NativeState::new();
         state.activate();

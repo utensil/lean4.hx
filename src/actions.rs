@@ -197,7 +197,10 @@ pub fn validate_rpc_action(action: &RpcAction, current: &RequestStamp) -> Result
     if action.version != current.version {
         return Err(ActionError::VersionMismatch);
     }
-    if action.method != "Lean.Widget.getInteractiveGoals" {
+    if !matches!(
+        action.method.as_str(),
+        "Lean.Widget.getInteractiveGoals" | "Lean.Widget.getInteractiveTermGoal"
+    ) {
         return Err(ActionError::Unsupported(action.method.clone()));
     }
     if action.session_id.is_empty() {
@@ -585,6 +588,9 @@ mod tests {
             validate_rpc_action(&action, &current),
             Err(ActionError::Unsupported("unsupported".into()))
         );
+        let mut term = action;
+        term.method = "Lean.Widget.getInteractiveTermGoal".into();
+        assert_eq!(validate_rpc_action(&term, &current), Ok(()));
     }
 
     #[test]
