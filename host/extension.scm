@@ -54,6 +54,8 @@
 (define lean4-hx-selection-start #f)
 (define lean4-hx-selection-end #f)
 (define lean4-hx-selection-info? #f)
+(define lean4-hx-error-baseline 0)
+(define lean4-hx-completion-expected? #f)
 
 (define (lean4-hx-clear-panel-focus!)
   ;; The compositor receives key events before Helix's editor keymap. Clear
@@ -133,14 +135,21 @@
 (define (lean4-hx-status prefix)
   (hx.set-status! (string-append prefix ": " (lean4-hx-summary))))
 
-(define (lean4-hx-current-has-errors?)
-  ;; An empty goal list can solve one bullet while sibling goals remain.  Do
-  ;; not celebrate an empty result that arrived with a document error (for
-  ;; example `apply h`).
+(define (lean4-hx-current-error-count)
   (let* ([view (editor.editor-focus)]
          [document (editor.editor->doc-id view)]
          [counts (editor.editor-document-diagnostic-counts document)])
-    (and counts (> (list-ref counts 3) 0))))
+    (if counts (list-ref counts 3) 0)))
+
+(define (lean4-hx-note-diagnostic-baseline!)
+  (set! lean4-hx-error-baseline (lean4-hx-current-error-count)))
+
+(define (lean4-hx-has-new-errors?)
+  ;; An empty goal list can solve one bullet while sibling goals remain.  Do
+  ;; not celebrate a result that introduced a new document error (for example
+  ;; `apply h`), but do not let an unrelated pre-existing error suppress a
+  ;; valid completion either.
+  (> (lean4-hx-current-error-count) lean4-hx-error-baseline))
 
 (define (lean4-hx-schedule-refresh!)
   ;; Coalesce open, edit, and selection events.  The callback is guarded by
@@ -174,6 +183,10 @@
           (set! lean4-hx-last-file path))
         #f))
   (lean4-hx-clear-panel-focus!)
+  (lean4-hx-note-diagnostic-baseline!)
+  (if (not lean4-hx-selection-pending?)
+      (set! lean4-hx-completion-expected? #f)
+      #f)
   (native-record-selection! lean4-hx-native)
   ;; Cancel immediately; the delayed callback reads the latest cursor.
   (if (native-active? lean4-hx-native)
@@ -183,6 +196,8 @@
 
 (define (lean4-hx-on-document-change document old-text)
   (lean4-hx-clear-panel-focus!)
+  (lean4-hx-note-diagnostic-baseline!)
+  (set! lean4-hx-completion-expected? #t)
   (native-record-document-change! lean4-hx-native)
   (lean4-hx-schedule-refresh!))
 
@@ -196,6 +211,8 @@
   ;; the previous Lean RPC session before that state is replaced so switching
   ;; buffers cannot leak opaque references on the server.
   (lean4-hx-clear-panel-focus!)
+  (lean4-hx-note-diagnostic-baseline!)
+  (set! lean4-hx-completion-expected? #f)
   (lean4-hx-rpc-release!)
   (native-record-open! lean4-hx-native)
   (set! lean4-hx-last-file (static.cx->current-file))
@@ -297,7 +314,9 @@
       (begin
         (native-record-callback-with-completion!
          lean4-hx-native generation (value->jsexpr-string result)
-         (not (lean4-hx-current-has-errors?))))
+         (and lean4-hx-completion-expected?
+              (not (lean4-hx-has-new-errors?))))
+        (set! lean4-hx-completion-expected? #f))
       #f))
 
 (define (lean4-hx-on-definition generation result)
@@ -357,7 +376,8 @@
                           (native-record-rpc-with-completion!
                            lean4-hx-native generation
                            (value->jsexpr-string reply)
-                           (not (lean4-hx-current-has-errors?)))))
+                           (and lean4-hx-completion-expected?
+                                (not (lean4-hx-has-new-errors?))))))
                        #f))))
               #f)))
       #f))
