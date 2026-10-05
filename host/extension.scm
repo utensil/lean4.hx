@@ -6,6 +6,7 @@
 (require-builtin helix/core/typable as command.)
 (require-builtin helix/core/text as text.)
 (require-builtin helix/components as components.)
+(require-builtin steel/filesystem)
 (#%require-dylib "liblean4_hx"
   (only-in native-state native-activate! native-deactivate! native-active?
            native-record-selection! native-record-document-change! native-record-open!
@@ -27,6 +28,7 @@
 (provide lean4-hx-request-lean-info!)
 (provide lean4-hx-request-term-goal!)
 (provide lean4-hx-code-action!)
+(provide lean4-hx-apply-navigation!)
 (provide lean4-hx-summary)
 (provide lean4-hx-native)
 (provide lean4-hx-set-layout!)
@@ -439,39 +441,66 @@
 (define (lean4-hx-code-action!)
   (static.code_action))
 
-(define (lean4-hx-apply-navigation!)
+(define (lean4-hx-apply-navigation-target! target-json)
   ;; Capture the whole target before opening: open/selection hooks invalidate it.
-  (let* ([target-json (native-navigation-target lean4-hx-native)]
-         [target (string->jsexpr target-json)])
+  (let* ([target (string->jsexpr target-json)])
     (if (not (hash-contains? target 'path))
         (hx.set-warning! "lean4.hx: navigation unavailable")
-        (let ([path (hash-ref target 'path)]
-              [start-line (exact (hash-ref target 'start-line))]
-              [end-line (exact (hash-ref target 'end-line))]
-              [start-character (exact (hash-ref target 'start-character))]
-              [end-character (exact (hash-ref target 'end-character))])
-        (begin
-          (command.open path)
-          (let* ([view (editor.editor-focus)]
-                 [document (editor.editor->doc-id view)]
-                 [rope (editor.editor->text document)]
-                 [start-rope (and (< start-line (text.rope-len-lines rope))
-                                  (text.rope->line rope start-line))]
-                 [end-rope (and (< end-line (text.rope-len-lines rope))
-                                (text.rope->line rope end-line))])
-            (if (and start-rope end-rope)
-                (let* ([start-text (text.rope->string start-rope)]
-                       [end-text (text.rope->string end-rope)]
-                       [start (+ (text.rope-line->char rope start-line)
-                                 (native-utf16-to-chars lean4-hx-native start-text start-character))]
-                       [end (+ (text.rope-line->char rope end-line)
-                               (native-utf16-to-chars lean4-hx-native end-text end-character))])
-                  (static.set-current-selection-object!
-                   (static.range->selection (static.range start end)))
-                  (native-set-focused! lean4-hx-native #f)
-                  (native-record-navigation-applied! lean4-hx-native path start-line start-character)
-                  (hx.set-status! "lean4.hx: navigated"))
-                (hx.set-warning! "lean4.hx: navigation target range unavailable"))))))))
+        (let* ([path (hash-ref target 'path)]
+               [start-line (exact (hash-ref target 'start-line))]
+               [end-line (exact (hash-ref target 'end-line))]
+               [start-character (exact (hash-ref target 'start-character))]
+               [end-character (exact (hash-ref target 'end-character))]
+               [ready? (if (equal? path (static.cx->current-file))
+                           #t
+                           (with-handler
+                             (lambda (_) #f)
+                             (let ([matches (glob path)])
+                               (let ([native-path (glob-iter-next! matches)])
+                                 (if native-path
+                                     (begin
+                                       (command.open (list (path->string native-path)))
+                                       ;; Opening a different document fires the
+                                       ;; normal open hook, which invalidates the
+                                       ;; native target. Carry this captured
+                                       ;; target through the asynchronous host
+                                       ;; switch and apply it after the new
+                                       ;; document is focused.
+                                       (hx.enqueue-thread-local-callback-with-delay
+                                        500
+                                        (lambda ()
+                                          (lean4-hx-apply-navigation-target!
+                                           target-json)))
+                                       'deferred)
+                                     #f)))))])
+          (if (equal? ready? 'deferred)
+              #f
+              (if (not ready?)
+              (hx.set-warning! "lean4.hx: cross-file navigation unavailable")
+              (let* ([view (editor.editor-focus)]
+                     [document (editor.editor->doc-id view)]
+                     [rope (editor.editor->text document)]
+                     [start-rope (and (< start-line (text.rope-len-lines rope))
+                                      (text.rope->line rope start-line))]
+                     [end-rope (and (< end-line (text.rope-len-lines rope))
+                                    (text.rope->line rope end-line))])
+                (if (and start-rope end-rope)
+                    (let* ([start-text (text.rope->string start-rope)]
+                           [end-text (text.rope->string end-rope)]
+                           [start (+ (text.rope-line->char rope start-line)
+                                     (native-utf16-to-chars lean4-hx-native start-text start-character))]
+                           [end (+ (text.rope-line->char rope end-line)
+                                   (native-utf16-to-chars lean4-hx-native end-text end-character))])
+                      (static.set-current-selection-object!
+                       (static.range->selection (static.range start end)))
+                      (native-set-focused! lean4-hx-native #f)
+                      (native-record-navigation-applied! lean4-hx-native path start-line start-character)
+                      (hx.set-status! "lean4.hx: navigated"))
+                    (hx.set-warning! "lean4.hx: navigation target range unavailable")))))))))
+
+(define (lean4-hx-apply-navigation!)
+  (lean4-hx-apply-navigation-target!
+   (native-navigation-target lean4-hx-native)))
 
 (define (lean4-hx-render-lines frame panel styled)
   (let* ([row (components.area-y panel)]
