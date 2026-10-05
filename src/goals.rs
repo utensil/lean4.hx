@@ -272,6 +272,10 @@ pub struct GoalState {
     /// also has no goal; this prevents a solved bullet from masquerading as a
     /// completed theorem while sibling goals remain.
     completion_candidate: Option<RequestStamp>,
+    /// A verified empty-goal response may be followed by one cursor refresh
+    /// that reports no goal again. Keep the celebration through that refresh
+    /// so it is visible instead of being replaced by an unavailable message.
+    completed_stamp: Option<RequestStamp>,
     next_generation: u64,
 }
 
@@ -281,6 +285,7 @@ impl Default for GoalState {
             active: None,
             snapshot: None,
             completion_candidate: None,
+            completed_stamp: None,
             next_generation: 0,
         }
     }
@@ -308,6 +313,13 @@ impl GoalState {
         }) {
             self.completion_candidate = None;
         }
+        if self.completed_stamp.as_ref().is_some_and(|completed| {
+            completed.uri != stamp.uri
+                || completed.version != stamp.version
+                || !position_at_or_after(&stamp.position, &completed.position)
+        }) {
+            self.completed_stamp = None;
+        }
         self.active = Some(stamp.clone());
         stamp
     }
@@ -321,6 +333,7 @@ impl GoalState {
                 position_after(&snapshot.stamp.position, &candidate.position)
             }) {
                 self.completion_candidate = None;
+                self.completed_stamp = Some(snapshot.stamp.clone());
                 self.snapshot = Some(snapshot);
             } else {
                 self.completion_candidate = Some(snapshot.stamp.clone());
@@ -329,6 +342,7 @@ impl GoalState {
             return true;
         }
         self.completion_candidate = None;
+        self.completed_stamp = None;
         self.snapshot = Some(snapshot);
         true
     }
@@ -365,6 +379,8 @@ impl GoalState {
             self.snapshot = Some(GoalSnapshot::unavailable(active, reason));
             self.active = None;
         }
+        self.completion_candidate = None;
+        self.completed_stamp = None;
     }
 
     /// Record a successful request with no goal while keeping its stamp alive
@@ -379,6 +395,7 @@ impl GoalState {
             return false;
         }
         self.snapshot = Some(GoalSnapshot::unavailable(stamp, reason));
+        self.completed_stamp = None;
         true
     }
 
@@ -387,6 +404,7 @@ impl GoalState {
             return false;
         }
         self.completion_candidate = None;
+        self.completed_stamp = Some(snapshot.stamp.clone());
         self.snapshot = Some(snapshot);
         true
     }
@@ -419,6 +437,23 @@ impl GoalState {
             self.completion_candidate = None;
             return self.accept_unavailable(generation, reason);
         }
+        if self.completed_stamp.as_ref().is_some_and(|completed| {
+            completed.uri == stamp.uri
+                && completed.version == stamp.version
+                && position_at_or_after(&stamp.position, &completed.position)
+        }) {
+            self.completed_stamp = None;
+            let accepted = self.accept_completed(GoalSnapshot::from_plain_goal(
+                stamp,
+                PlainGoal {
+                    rendered: String::new(),
+                    goals: Vec::new(),
+                    extra: Default::default(),
+                },
+            ));
+            self.completed_stamp = None;
+            return accepted;
+        }
         let completed = self.completion_candidate.as_ref().is_some_and(|candidate| {
             candidate.uri == stamp.uri
                 && candidate.version == stamp.version
@@ -447,6 +482,7 @@ impl GoalState {
         self.active = None;
         self.snapshot = None;
         self.completion_candidate = None;
+        self.completed_stamp = None;
     }
 
     pub fn snapshot(&self) -> Option<&GoalSnapshot> {
@@ -467,6 +503,10 @@ impl GoalState {
 
 fn position_after(left: &Position, right: &Position) -> bool {
     left.line > right.line || (left.line == right.line && left.character > right.character)
+}
+
+fn position_at_or_after(left: &Position, right: &Position) -> bool {
+    left == right || position_after(left, right)
 }
 
 #[cfg(test)]
@@ -684,6 +724,42 @@ mod tests {
         ));
         assert!(!state.display_text().contains("Goal complete"));
         assert!(state.display_text().contains("Lean unavailable"));
+    }
+
+    #[test]
+    fn verified_completion_survives_followup_no_goal_refresh() {
+        let mut state = GoalState::default();
+        let solved = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 3,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept_plain_goal_with_completion(
+            solved.generation,
+            PlainGoal {
+                rendered: String::new(),
+                goals: Vec::new(),
+                extra: Extras::new(),
+            },
+            true,
+        ));
+        assert_eq!(state.display_text(), "🎉 Goal complete");
+
+        let refresh = state.begin(
+            "file:///Main.lean",
+            1,
+            Position {
+                line: 1,
+                character: 3,
+                extra: Extras::new(),
+            },
+        );
+        assert!(state.accept_no_goal(refresh.generation, "Lean returned no goal"));
+        assert_eq!(state.display_text(), "🎉 Goal complete");
     }
 
     #[test]

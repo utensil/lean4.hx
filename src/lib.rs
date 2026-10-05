@@ -408,6 +408,9 @@ impl NativeState {
             self.selected_goal.store(0, Ordering::Release);
             *self.goal.lock().expect("goal state poisoned") = goal.clone();
             trace!("LEAN4_HX_CALLBACK result=reply");
+            if goal == "🎉 Goal complete" {
+                trace!("LEAN4_HX_GOAL_COMPLETE");
+            }
             trace!(
                 "LEAN4_HX_GOAL generation={generation} available={}",
                 goal != "Lean goal unavailable" && !goal.is_empty()
@@ -697,6 +700,9 @@ impl NativeState {
                                 .map(|snapshot| snapshot.display_lines().len())
                                 .unwrap_or(0);
                             trace!("LEAN4_HX_RPC action=interactive-goals");
+                            if text == "🎉 Goal complete" {
+                                trace!("LEAN4_HX_GOAL_COMPLETE");
+                            }
                             trace!("LEAN4_HX_TAGGED_RENDER_READY lines={lines} available=true");
                             return;
                         }

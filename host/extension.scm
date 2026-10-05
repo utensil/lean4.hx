@@ -550,8 +550,7 @@
       #f))
 
 (define (lean4-hx-render-help! frame panel)
-  (let ([style (components.style-with-dim
-                (components.style-fg (components.style) components.Color/Gray))])
+  (let ([style (components.style)])
     (lean4-hx-render-panel-text! frame panel 0 "Lean panel help" (components.style-with-bold style))
     (lean4-hx-render-panel-text! frame panel 2
                                  (string-append lean4-hx-leader-label " ?  help") style)
