@@ -29,6 +29,7 @@ use crate::{
 const MAX_PANEL_ROWS: usize = 512;
 const MAX_INFO_LINES: usize = 64;
 const MAX_INFO_LINE_CHARS: usize = 512;
+const MAX_RPC_REFS: usize = 128;
 
 macro_rules! trace {
     ($($arg:tt)*) => {
@@ -335,6 +336,10 @@ impl NativeState {
         self.clear_cursor_info();
         *self.navigation.lock().expect("navigation state poisoned") =
             "Navigation unavailable".to_owned();
+        trace!(
+            "LEAN4_HX_CANCEL generation={}",
+            self.generation.load(Ordering::Acquire)
+        );
     }
 
     fn record_request(&self, _path: String, line: usize, character: usize) {
@@ -594,21 +599,34 @@ impl NativeState {
     }
 
     fn collect_rpc_refs(value: &Value, refs: &mut Vec<Value>) {
+        if refs.len() >= MAX_RPC_REFS {
+            return;
+        }
         match value {
             Value::Object(object)
                 if object.len() == 1
                     && (object.contains_key("__rpcref") || object.contains_key("p")) =>
             {
-                if !refs.iter().any(|existing| existing == value) {
+                if !refs.iter().any(|existing| existing == value) && refs.len() < MAX_RPC_REFS {
                     refs.push(value.clone());
                 }
             }
-            Value::Object(object) => object
-                .values()
-                .for_each(|value| Self::collect_rpc_refs(value, refs)),
-            Value::Array(values) => values
-                .iter()
-                .for_each(|value| Self::collect_rpc_refs(value, refs)),
+            Value::Object(object) => {
+                for value in object.values() {
+                    Self::collect_rpc_refs(value, refs);
+                    if refs.len() >= MAX_RPC_REFS {
+                        break;
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    Self::collect_rpc_refs(value, refs);
+                    if refs.len() >= MAX_RPC_REFS {
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -655,6 +673,9 @@ impl NativeState {
                     {
                         let mut refs = Vec::new();
                         Self::collect_rpc_refs(&value, &mut refs);
+                        if refs.len() == MAX_RPC_REFS {
+                            trace!("LEAN4_HX_RPC refs-truncated limit={MAX_RPC_REFS}");
+                        }
                         *self.rpc_refs.lock().expect("rpc state poisoned") = refs;
                         let mut state = self.goal_state.lock().expect("goal state poisoned");
                         let accepted = if !allow_completion && snapshot.completed {
@@ -834,6 +855,9 @@ impl NativeState {
         }
         let mut refs = Vec::new();
         Self::collect_rpc_refs(value, &mut refs);
+        if refs.len() == MAX_RPC_REFS {
+            trace!("LEAN4_HX_RPC refs-truncated limit={MAX_RPC_REFS}");
+        }
         if !refs.is_empty() {
             let mut owned = self.rpc_refs.lock().expect("rpc state poisoned");
             for reference in refs {
@@ -1449,6 +1473,30 @@ mod tests {
         assert!(!state.styled_lines(36).is_empty());
         state.record_callback(generation, "malformed callback".into());
         assert_eq!(state.styled_lines(36), "[]");
+    }
+
+    #[test]
+    fn cancellation_invalidates_repeated_selection_bursts() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        for _ in 0..200 {
+            state.cancel_request();
+        }
+        state.record_callback(generation, r#"{"goals":["stale"]}"#.into());
+        assert_eq!(state.styled_lines(36), "[]");
+        assert_eq!(state.info_lines(36), "[]");
+    }
+
+    #[test]
+    fn rpc_reference_collection_is_bounded() {
+        let refs = (0..(MAX_RPC_REFS + 72))
+            .map(|index| serde_json::json!({"__rpcref": index}))
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({"refs": refs});
+        let mut collected = Vec::new();
+        NativeState::collect_rpc_refs(&value, &mut collected);
+        assert_eq!(collected.len(), MAX_RPC_REFS);
     }
 
     #[test]

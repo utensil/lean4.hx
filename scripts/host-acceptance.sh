@@ -149,6 +149,8 @@ need "Lean panel help"
 need "source Space k  hover documentation"
 send "\\033"
 sleep 1
+send "\\t"
+need "LEAN4_HX_GOAL_FOCUS focused=true"
 send " "
 send "l"
 send "n"
@@ -219,6 +221,7 @@ for marker in \
     'LEAN4_HX_INSTALL active=true' \
     'LEAN4_HX_OPEN' \
     'LEAN4_HX_DOCUMENT_CHANGED version=' \
+    'LEAN4_HX_CANCEL generation=' \
     'LEAN4_HX_CLOSE' \
     'LEAN4_HX_REQUEST line=' \
     'LEAN4_HX_CALLBACK result=reply' \
