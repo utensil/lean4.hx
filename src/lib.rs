@@ -39,6 +39,7 @@ macro_rules! trace {
 }
 
 pub mod actions;
+pub mod adapters;
 pub mod correspondence;
 pub mod cursor_info;
 pub mod goals;
@@ -85,6 +86,21 @@ struct CursorInfo {
 impl Custom for NativeState {}
 
 impl NativeState {
+    fn decode_payload(raw: &str, context: &str) -> Option<Value> {
+        match adapters::TextTraceAdapter::decode(raw) {
+            adapters::AdaptedPayload::Structured(value) => {
+                trace!("LEAN4_HX_ADAPTER mode=structured context={context}");
+                Some(value)
+            }
+            adapters::AdaptedPayload::Fallback { bytes, truncated } => {
+                trace!(
+                    "LEAN4_HX_ADAPTER mode=fallback context={context} bytes={bytes} truncated={truncated}"
+                );
+                None
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
@@ -353,9 +369,15 @@ impl NativeState {
                 );
                 state.display_text()
             } else {
-                let accepted = serde_json::from_str::<Value>(&result)
-                    .ok()
-                    .and_then(|value| Self::plain_goal(&value))
+                let Some(value) = Self::decode_payload(&result, "plain-goal") else {
+                    let mut state = self.goal_state.lock().expect("goal state poisoned");
+                    state.accept_unavailable(generation as u64, "malformed host callback");
+                    *self.goal.lock().expect("goal state poisoned") = state.display_text();
+                    self.request_inflight.store(false, Ordering::Release);
+                    trace!("LEAN4_HX_CALLBACK result=fallback");
+                    return;
+                };
+                let accepted = Self::plain_goal(&value)
                     .map(|plain| {
                         self.goal_state
                             .lock()
@@ -418,7 +440,8 @@ impl NativeState {
             trace!("LEAN4_HX_INFO kind={kind} result=stale");
             return;
         };
-        let Ok(value) = serde_json::from_str::<Value>(&result) else {
+        let Some(value) = Self::decode_payload(&result, kind) else {
+            self.clear_cursor_info();
             trace!("LEAN4_HX_INFO kind={kind} result=malformed");
             return;
         };
@@ -470,8 +493,7 @@ impl NativeState {
             .navigation_target
             .lock()
             .expect("navigation state poisoned") = None;
-        let navigation = serde_json::from_str::<Value>(&result)
-            .ok()
+        let navigation = Self::decode_payload(&result, "navigation")
             .and_then(|value| first_location(&value))
             .map(|location| {
                 *self
@@ -602,7 +624,8 @@ impl NativeState {
         allow_completion: bool,
     ) {
         if self.is_active() && self.generation.load(Ordering::Acquire) == generation {
-            let Ok(value) = serde_json::from_str::<Value>(&result) else {
+            let Some(value) = Self::decode_payload(&result, "interactive-goals") else {
+                self.clear_rpc_session();
                 trace!("LEAN4_HX_RPC action=reply");
                 return;
             };
@@ -766,8 +789,9 @@ impl NativeState {
             trace!("LEAN4_HX_RPC action=term-goal stale");
             return;
         };
-        let Ok(value) = serde_json::from_str::<Value>(&result) else {
+        let Some(value) = Self::decode_payload(&result, "term-goal") else {
             self.action_inflight.store(false, Ordering::Release);
+            self.clear_cursor_info();
             trace!("LEAN4_HX_RPC action=term-goal malformed");
             return;
         };
@@ -1073,7 +1097,7 @@ impl NativeState {
         if !self.generation_current(generation) {
             return "{}".into();
         }
-        let Ok(value) = serde_json::from_str::<Value>(&result) else {
+        let Some(value) = Self::decode_payload(&result, "rpc-connect") else {
             return "{}".into();
         };
         let Some(session) = value.get("sessionId").cloned() else {
@@ -1411,6 +1435,20 @@ mod tests {
         state.record_callback(generation, "null".into());
         assert_eq!(state.styled_lines(36), "[]");
         assert!(state.lines().is_empty());
+    }
+
+    #[test]
+    fn malformed_callback_clears_the_previous_goal() {
+        let state = NativeState::new();
+        state.activate();
+        let generation = state.begin_request("/tmp/Main.lean".into(), 0, 0);
+        state.record_callback(
+            generation,
+            r#"{"goals":["n : Nat\n⊢ n = n"]}"#.into(),
+        );
+        assert!(!state.styled_lines(36).is_empty());
+        state.record_callback(generation, "malformed callback".into());
+        assert_eq!(state.styled_lines(36), "[]");
     }
 
     #[test]

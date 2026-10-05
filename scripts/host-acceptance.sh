@@ -222,6 +222,7 @@ for marker in \
     'LEAN4_HX_CLOSE' \
     'LEAN4_HX_REQUEST line=' \
     'LEAN4_HX_CALLBACK result=reply' \
+    'LEAN4_HX_ADAPTER mode=structured context=plain-goal' \
     'LEAN4_HX_GOAL_RENDER_READY lines=' \
     'LEAN4_HX_GOAL_AVAILABLE' \
     'LEAN4_HX_TAGGED_RENDER_READY' \
