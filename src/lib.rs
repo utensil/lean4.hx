@@ -729,11 +729,27 @@ impl NativeState {
             self.action_inflight.store(false, Ordering::Release);
             return "{}".into();
         };
+        let action = actions::RpcAction {
+            uri: stamp.uri.clone(),
+            version: stamp.version,
+            generation: stamp.generation,
+            session_id: session.to_string(),
+            method: "Lean.Widget.getInteractiveTermGoal".to_owned(),
+            params: serde_json::json!({
+                "textDocument": {"uri": stamp.uri},
+                "position": stamp.position
+            }),
+        };
+        if let Err(error) = actions::validate_rpc_action(&action, &stamp) {
+            self.action_inflight.store(false, Ordering::Release);
+            trace!("LEAN4_HX_RPC action=term-goal rejected capability={error:?}");
+            return "{}".into();
+        }
         let params = serde_json::json!({
             "textDocument": {"uri": stamp.uri},
             "position": stamp.position
         });
-        trace!("LEAN4_HX_RPC action=request-term-goal");
+        trace!("LEAN4_HX_RPC action=request-term-goal capability=validated");
         serde_json::json!({
             "textDocument": {"uri": stamp.uri},
             "position": stamp.position,
@@ -1573,6 +1589,29 @@ mod tests {
         assert_ne!(first, second);
         assert!(!state.rpc_session_current(first));
         assert_eq!(state.rpc_goals_request(first, r#"{"sessionId":"root-a"}"#.into()), "{}");
+    }
+
+    #[test]
+    fn rpc_sessions_are_isolated_between_live_roots() {
+        let first = NativeState::new();
+        let second = NativeState::new();
+        first.activate();
+        second.activate();
+        let first_generation = first.begin_request("/tmp/RootA/Main.lean".into(), 1, 0);
+        let second_generation = second.begin_request("/tmp/RootB/Main.lean".into(), 2, 0);
+        first.record_rpc(first_generation, r#"{"sessionId":"root-a"}"#.into());
+        second.record_rpc(second_generation, r#"{"sessionId":"root-b"}"#.into());
+
+        let first_request = first.rpc_term_goal_request(first_generation);
+        let second_request = second.rpc_term_goal_request(second_generation);
+        assert!(first_request.contains("root-a"));
+        assert!(first_request.contains("RootA/Main.lean"));
+        assert!(second_request.contains("root-b"));
+        assert!(second_request.contains("RootB/Main.lean"));
+
+        first.record_opened();
+        assert!(!first.rpc_session_current(first_generation));
+        assert!(second.rpc_session_current(second_generation));
     }
 
     #[test]
