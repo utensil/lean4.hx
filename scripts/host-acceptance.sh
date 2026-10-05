@@ -200,7 +200,7 @@ sleep 2
 need "LEAN4_HX_REQUEST line=0 character=20"
 send ":lean4-hx-request-term-goal!"
 send "\\r"
-need "LEAN4_HX_RPC action=request-term-goal"
+need "LEAN4_HX_RPC action=request-term-goal capability=validated"
 need "LEAN4_HX_RPC action=term-goal result=ready lines="
 send ":lean4-hx-remove-component!"
 send "\\r"
@@ -229,7 +229,7 @@ for marker in \
     'LEAN4_HX_GOAL_FOCUS focused=false' \
     'LEAN4_HX_GOAL_SELECTED index=' \
     'LEAN4_HX_RPC action=keepAlive' \
-    'LEAN4_HX_RPC action=request-term-goal' \
+    'LEAN4_HX_RPC action=request-term-goal capability=validated' \
     'LEAN4_HX_RPC action=term-goal result=ready lines=' \
     'LEAN4_HX_RPC action=release refs=' \
     'LEAN4_HX_REMOVE active=false'; do
