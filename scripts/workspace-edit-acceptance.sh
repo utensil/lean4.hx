@@ -17,14 +17,14 @@ hx_bin=${HOST_HELIX_BIN:-$helix_dir/target/release/hx}
 [ -x "$hx_bin" ] || exit 1
 command -v expect >/dev/null 2>&1 || exit 1
 
-run_dir=$(mktemp -d "$host_tmp/lean4hx-workspace-edit.XXXXXX")
-runtime_dir=$run_dir/runtime
+acceptance_root=${LEAN4_HX_ACCEPTANCE_DIR:-$repo_root/.acceptance-workspace}
+run_dir=$acceptance_root/current
+runtime_dir=$helix_dir/runtime
 config_dir=$run_dir/config
 helix_config=$config_dir/helix
 steel_home=$run_dir/steel
 project_dir=$run_dir/project
 mkdir -p "$helix_config" "$steel_home/cogs" "$steel_home/native" "$project_dir"
-cp -RP "$helix_dir/runtime/." "$runtime_dir/"
 cp "$fixture/Main.lean" "$fixture/Second.lean" "$fixture/lakefile.toml" "$fixture/.lean-toolchain" "$project_dir/"
 cp "$repo_root/host/extension.scm" "$steel_home/cogs/lean4-hx.scm"
 cp "$repo_root/host/extension.scm" "$helix_config/lean4-hx.scm"
@@ -54,6 +54,7 @@ cp "$helix_config/init.scm" "$steel_home/init.scm"
 
 pty_script=$run_dir/acceptance.exp
 pty_log=$run_dir/pty.log
+: >"$pty_log"
 cat >"$pty_script" <<EOF
 log_user 0
 log_file -a "$pty_log"
