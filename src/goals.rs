@@ -414,11 +414,10 @@ impl GoalState {
     }
 
     /// A null plain-goal reply normally means that the cursor is outside a
-    /// proof. Treat it as a completed-proof transition only after a preceding
-    /// empty response was followed by a later cursor position with no goal.
-    /// This avoids celebrating a solved bullet while sibling goals remain.
+    /// proof. Callers must explicitly allow completion when the reply follows
+    /// a document edit that could have closed the final goal.
     pub fn accept_no_goal(&mut self, generation: u64, reason: impl Into<String>) -> bool {
-        self.accept_no_goal_with_completion(generation, reason, true)
+        self.accept_no_goal_with_completion(generation, reason, false)
     }
 
     pub fn accept_no_goal_with_completion(
@@ -432,10 +431,6 @@ impl GoalState {
         };
         if stamp.generation != generation {
             return false;
-        }
-        if !allow_completion {
-            self.completion_candidate = None;
-            return self.accept_unavailable(generation, reason);
         }
         if self.completed_stamp.as_ref().is_some_and(|completed| {
             completed.uri == stamp.uri
@@ -454,23 +449,18 @@ impl GoalState {
             self.completed_stamp = None;
             return accepted;
         }
-        let completed = self.completion_candidate.as_ref().is_some_and(|candidate| {
-            candidate.uri == stamp.uri
-                && candidate.version == stamp.version
-                && position_after(&stamp.position, &candidate.position)
-        });
-        if completed {
-            self.accept(GoalSnapshot::from_plain_goal(
-                stamp,
-                PlainGoal {
-                    rendered: String::new(),
-                    goals: Vec::new(),
-                    extra: Default::default(),
-                },
-            ))
-        } else {
-            self.accept_unavailable(generation, reason)
+        if !allow_completion {
+            self.completion_candidate = None;
+            return self.accept_unavailable(generation, reason);
         }
+        return self.accept_completed(GoalSnapshot::from_plain_goal(
+            stamp,
+            PlainGoal {
+                rendered: String::new(),
+                goals: Vec::new(),
+                extra: Default::default(),
+            },
+        ));
     }
 
     pub fn invalidate_and_advance(&mut self, reason: impl Into<String>) {
@@ -809,7 +799,11 @@ mod tests {
                 extra: Extras::new(),
             },
         );
-        assert!(state.accept_no_goal(after.generation, "Lean returned no goal"));
+        assert!(state.accept_no_goal_with_completion(
+            after.generation,
+            "Lean returned no goal",
+            true,
+        ));
         assert!(state.snapshot().unwrap().completed);
         assert_eq!(state.display_text(), "🎉 Goal complete");
     }

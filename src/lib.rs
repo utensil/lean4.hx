@@ -352,7 +352,7 @@ impl NativeState {
     }
 
     fn record_callback(&self, generation: usize, result: String) {
-        self.record_callback_with_completion(generation, result, true);
+        self.record_callback_with_completion(generation, result, false);
     }
 
     fn record_callback_with_completion(
@@ -635,7 +635,7 @@ impl NativeState {
     }
 
     fn record_rpc(&self, generation: usize, result: String) {
-        self.record_rpc_with_completion(generation, result, true);
+        self.record_rpc_with_completion(generation, result, false);
     }
 
     fn record_rpc_with_completion(
